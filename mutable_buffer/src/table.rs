@@ -22,8 +22,13 @@ use snafu::{OptionExt, ResultExt, Snafu};
 use arrow_deps::{
     arrow,
     arrow::{
-        array::{ArrayRef, BooleanBuilder, Float64Builder, Int64Builder, StringBuilder},
-        datatypes::{DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema},
+        array::{
+            ArrayRef, BooleanBuilder, Float64Builder, Int64Builder, PrimitiveBuilder,
+            StringBuilder, StringDictionaryBuilder,
+        },
+        datatypes::{
+            DataType as ArrowDataType, Field as ArrowField, Int32Type, Schema as ArrowSchema,
+        },
         record_batch::RecordBatch,
     },
     datafusion::{
@@ -32,6 +37,9 @@ use arrow_deps::{
         prelude::*,
     },
 };
+/// swag that each tag is ~ 10 bytes long for dictionary allocation
+/// purposes
+const ESTIMATED_TAG_SIZE: usize = 10;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -880,23 +888,35 @@ impl Table {
                     Arc::new(builder.finish())
                 }
                 Column::Tag(vals, _) => {
-                    fields.push(ArrowField::new(column_name, ArrowDataType::Utf8, true));
-                    let mut builder = StringBuilder::with_capacity(vals.len(), vals.len() * 10);
+                    // build using a StringDictionary (32 bit indexes = keys)
+                    let field_type = ArrowDataType::Dictionary(
+                        Box::new(ArrowDataType::Int32),
+                        Box::new(ArrowDataType::Utf8),
+                    );
+                    fields.push(ArrowField::new(column_name, field_type, true));
+                    let dictionary = &chunk.dictionary;
+
+                    let keys_builder = PrimitiveBuilder::<Int32Type>::new(vals.len());
+                    // swag that each tag is ~ 10 bytes long
+                    let values_builder = StringBuilder::with_capacity(
+                        dictionary.len(),
+                        dictionary.len() * ESTIMATED_TAG_SIZE,
+                    );
+                    let mut builder = StringDictionaryBuilder::new(keys_builder, values_builder);
 
                     for v in vals {
                         match v {
-                            None => builder.append_null(),
+                            None => builder.append_null().context(ArrowError {})?,
                             Some(value_id) => {
-                                let tag_value = chunk.dictionary.lookup_id(*value_id).context(
+                                let tag_value = dictionary.lookup_id(*value_id).context(
                                     TagValueIdNotFoundInDictionary {
                                         value: *value_id,
                                         chunk: &chunk.key,
                                     },
                                 )?;
-                                builder.append_value(tag_value)
+                                builder.append(tag_value).context(ArrowError {})?;
                             }
                         }
-                        .context(ArrowError {})?;
                     }
 
                     Arc::new(builder.finish())
