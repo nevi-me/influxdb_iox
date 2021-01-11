@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Display;
-use std::slice::Iter;
+use std::{rc::Rc, sync::RwLock};
 
 use crate::{
     column,
@@ -34,7 +34,7 @@ pub struct Table {
     // Metadata about the table's segments
     meta: MetaData,
 
-    row_groups: Vec<RowGroup>,
+    row_groups: RwLock<Vec<Rc<RowGroup>>>,
 }
 
 impl Table {
@@ -43,24 +43,19 @@ impl Table {
         Self {
             name,
             meta: MetaData::new(&rg),
-            row_groups: vec![rg],
+            row_groups: RwLock::new(vec![Rc::new(rg)]),
         }
     }
 
     /// Add a new row group to this table.
     pub fn add_row_group(&mut self, rg: RowGroup) {
         self.meta.update(&rg);
-        self.row_groups.push(rg);
+        self.row_groups.write().unwrap().push(Rc::new(rg));
     }
 
     /// Remove the row group at `position` from table.
     pub fn drop_segment(&mut self, position: usize) {
         todo!();
-    }
-
-    /// Iterate over all row groups for the table.
-    pub fn iter(&mut self) -> Iter<'_, RowGroup> {
-        self.row_groups.iter()
     }
 
     /// The name of the table (equivalent to measurement or table name).
@@ -70,12 +65,12 @@ impl Table {
 
     /// Determines if this table contains no row groups.
     pub fn is_empty(&self) -> bool {
-        self.row_groups.is_empty()
+        self.row_groups.read().unwrap().is_empty()
     }
 
     /// The total number of row groups within this table.
     pub fn len(&self) -> usize {
-        self.row_groups.len()
+        self.row_groups.read().unwrap().len()
     }
 
     /// The total size of the table in bytes.
@@ -114,10 +109,11 @@ impl Table {
     }
 
     // Identify set of row groups that may satisfy the predicates.
-    fn filter_row_groups<'input>(&self, predicates: &[Predicate<'input>]) -> Vec<&RowGroup> {
-        let mut rgs = Vec::with_capacity(self.row_groups.len());
+    fn filter_row_groups<'input>(&self, predicates: &[Predicate<'input>]) -> Vec<Rc<RowGroup>> {
+        let mut rgs = Vec::with_capacity(self.row_groups.read().unwrap().len());
 
-        'rowgroup: for rg in &self.row_groups {
+        let table_row_groups = self.row_groups.read().unwrap();
+        'rowgroup: for rg in table_row_groups.iter() {
             // check all provided predicates
             for (col_name, pred) in predicates {
                 if !rg.column_could_satisfy_predicate(col_name, pred) {
@@ -125,8 +121,10 @@ impl Table {
                 }
             }
 
-            // segment could potentially satisfy all predicates
-            rgs.push(rg);
+            // row group could potentially satisfy all predicates
+
+            // Oh boy I have no idea what this does.
+            rgs.push(Rc::clone(rg));
         }
 
         rgs
@@ -163,6 +161,7 @@ impl Table {
             predicates,
             schema,
             row_groups: rgs,
+            next_i: 0,
         }
     }
 
@@ -564,7 +563,8 @@ pub struct ReadFilterResults<'input, 'table> {
     schema: Vec<(&'table str, LogicalDataType)>,
 
     // These row groups passed the predicates and need to be queried.
-    row_groups: Vec<&'table RowGroup>,
+    row_groups: Vec<Rc<RowGroup>>,
+    next_i: usize,
 
     // TODO(edd): encapsulate these into a single executor function that just
     // executes on the next row group.
@@ -588,12 +588,17 @@ impl<'a> Iterator for ReadFilterResults<'_, 'a> {
     type Item = row_group::ReadFilterResult<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.is_empty() {
+        if self.next_i == self.row_groups.len() {
             return None;
         }
+        let curr_i = self.next_i;
+        self.next_i += 1;
 
-        let row_group = self.row_groups.remove(0);
-        let result = row_group.read_filter(&self.columns, self.predicates);
+        let result = self
+            .row_groups
+            .get(curr_i) // <-- uh oh!
+            .unwrap()
+            .read_filter(&self.columns, self.predicates);
         if result.is_empty() {
             return self.next(); // try next row group
         }
