@@ -670,6 +670,18 @@ mod test_influxrpc {
         run_table_names_test_case!(TwoMeasurements {}, tsp(250, 300), vec![]);
     }
 
+    #[tokio::test]
+    async fn list_table_names_data_pred_bytes() {
+        use arrow_deps::datafusion::logical_plan::*;
+
+        // bytes > 50
+        let predicate = PredicateBuilder::default()
+            .add_expr(col("bytes").gt(lit(50)))
+            .build();
+
+        run_table_names_test_case!(TwoMeasurements {}, predicate, vec!["disk"]);
+    }
+
     // No predicate at all
     fn empty_predicate() -> Predicate {
         Predicate::default()
