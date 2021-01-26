@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::convert::From;
 use std::iter;
 use std::mem::size_of;
+use std::rc::Rc;
 
 use croaring::Bitmap;
 
@@ -17,11 +18,11 @@ pub struct RLE {
 
     // The mapping between non-null entries and their assigned ids. The id
     // `NULL_ID` is reserved for the NULL entry.
-    entry_index: BTreeMap<String, u32>,
+    entry_index: BTreeMap<Rc<str>, u32>,
 
     // The mapping between an id (as an index) and its entry. The entry at index
     // `NULL_ID` is undefined because that id is reserved for the NULL value.
-    index_entries: Vec<String>,
+    index_entries: Vec<Rc<str>>,
 
     // The set of rows that belong to each distinct value in the dictionary.
     // This allows essentially constant time grouping of rows on the column by
@@ -43,17 +44,17 @@ pub struct RLE {
 // for the NULL value.
 impl Default for RLE {
     fn default() -> Self {
-        let mut _self = Self {
+        let mut new_self = Self {
             entry_index: BTreeMap::new(),
-            index_entries: vec!["".to_string()],
+            index_entries: vec!["".into()],
             index_row_ids: BTreeMap::new(),
             run_lengths: Vec::new(),
             contains_null: false,
             num_rows: 0,
         };
-        _self.index_row_ids.insert(NULL_ID, RowIDs::new_bitmap());
+        new_self.index_row_ids.insert(NULL_ID, RowIDs::new_bitmap());
 
-        _self
+        new_self
     }
 }
 
@@ -61,18 +62,18 @@ impl RLE {
     /// Initialises an RLE encoding with a set of column values, ensuring that
     /// the rows in the column can be inserted in any order and the correct
     /// ordinal relationship will exist between the encoded values.
-    pub fn with_dictionary(dictionary: BTreeSet<String>) -> Self {
-        let mut _self = Self::default();
+    pub fn with_dictionary(dictionary: BTreeSet<Rc<str>>) -> Self {
+        let mut new_self = Self::default();
 
         for entry in dictionary.into_iter() {
-            let next_id = _self.next_encoded_id();
+            let next_id = new_self.next_encoded_id();
 
-            _self.entry_index.insert(entry.clone(), next_id);
-            _self.index_entries.push(entry);
-            _self.index_row_ids.insert(next_id, RowIDs::new_bitmap());
+            new_self.entry_index.insert(entry.clone(), next_id);
+            new_self.index_entries.push(entry);
+            new_self.index_row_ids.insert(next_id, RowIDs::new_bitmap());
         }
 
-        _self
+        new_self
     }
 
     /// A reasonable estimation of the on-heap size this encoding takes up.
@@ -109,7 +110,7 @@ impl RLE {
 
     /// Adds the provided string value to the encoded data. It is the caller's
     /// responsibility to ensure that the dictionary encoded remains sorted.
-    pub fn push(&mut self, v: String) {
+    pub fn push(&mut self, v: Rc<str>) {
         self.push_additional(Some(v), 1);
     }
 
@@ -122,14 +123,14 @@ impl RLE {
     /// Adds additional repetitions of the provided value to the encoded data.
     /// It is the caller's responsibility to ensure that the dictionary encoded
     /// remains sorted.
-    pub fn push_additional(&mut self, v: Option<String>, additional: u32) {
+    pub fn push_additional(&mut self, v: Option<Rc<str>>, additional: u32) {
         match v {
             Some(v) => self.push_additional_some(v, additional),
             None => self.push_additional_none(additional),
         }
     }
 
-    fn push_additional_some(&mut self, v: String, additional: u32) {
+    fn push_additional_some(&mut self, v: Rc<str>, additional: u32) {
         match self.entry_index.get(&v) {
             // existing dictionary entry for value.
             Some(id) => {
@@ -237,7 +238,7 @@ impl RLE {
 
     /// Populates the provided destination container with the row ids satisfying
     /// the provided predicate.
-    pub fn row_ids_filter(&self, value: &str, op: &cmp::Operator, dst: RowIDs) -> RowIDs {
+    pub fn row_ids_filter(&self, value: Rc<str>, op: &cmp::Operator, dst: RowIDs) -> RowIDs {
         match op {
             cmp::Operator::Equal | cmp::Operator::NotEqual => self.row_ids_equal(value, op, dst),
             cmp::Operator::LT | cmp::Operator::LTE | cmp::Operator::GT | cmp::Operator::GTE => {
@@ -247,7 +248,7 @@ impl RLE {
     }
 
     // Finds row ids based on = or != operator.
-    fn row_ids_equal(&self, value: &str, op: &cmp::Operator, mut dst: RowIDs) -> RowIDs {
+    fn row_ids_equal(&self, value: Rc<str>, op: &cmp::Operator, mut dst: RowIDs) -> RowIDs {
         dst.clear();
         let include = match op {
             cmp::Operator::Equal => true,
@@ -255,7 +256,7 @@ impl RLE {
             _ => unreachable!("invalid operator"),
         };
 
-        if let Some(encoded_id) = self.entry_index.get(value) {
+        if let Some(encoded_id) = self.entry_index.get(&value) {
             match op {
                 cmp::Operator::Equal => {
                     let ids = self.index_row_ids.get(encoded_id).unwrap();
@@ -296,11 +297,11 @@ impl RLE {
     }
 
     // Finds row ids based on <, <=, > or >= operator.
-    fn row_ids_cmp(&self, value: &str, op: &cmp::Operator, mut dst: RowIDs) -> RowIDs {
+    fn row_ids_cmp(&self, value: Rc<str>, op: &cmp::Operator, mut dst: RowIDs) -> RowIDs {
         dst.clear();
 
         // happy path - the value exists in the column
-        if let Some(encoded_id) = self.entry_index.get(value) {
+        if let Some(encoded_id) = self.entry_index.get(&value) {
             let cmp = match op {
                 cmp::Operator::GT => PartialOrd::gt,
                 cmp::Operator::GTE => PartialOrd::ge,
@@ -326,8 +327,8 @@ impl RLE {
         match op {
             cmp::Operator::GT | cmp::Operator::GTE => {
                 // find the first decoded value that satisfies the predicate.
-                for (other, other_encoded_id) in &self.entry_index {
-                    if other.as_str() > value {
+                for (&other, other_encoded_id) in &self.entry_index {
+                    if other > value {
                         // change filter from either `x > value` or `x >= value` to `x >= other`
                         return self.row_ids_cmp(other, &cmp::Operator::GTE, dst);
                     }
@@ -336,8 +337,8 @@ impl RLE {
             cmp::Operator::LT | cmp::Operator::LTE => {
                 // find the first decoded value that satisfies the predicate.
                 // Note iteration is in reverse
-                for (other, other_encoded_id) in self.entry_index.iter().rev() {
-                    if other.as_str() < value {
+                for (&other, other_encoded_id) in self.entry_index.iter().rev() {
+                    if other < value {
                         // change filter from either `x < value` or `x <= value` to `x <= other`
                         return self.row_ids_cmp(other, &cmp::Operator::LTE, dst);
                     }
@@ -390,15 +391,15 @@ impl RLE {
     //
     //
 
-    pub fn dictionary(&self) -> Vec<&String> {
-        self.index_entries.iter().skip(1).collect()
+    pub fn dictionary(&self) -> Vec<Rc<str>> {
+        self.index_entries.iter().skip(1).cloned().collect()
     }
 
     /// Returns the logical value present at the provided row id.
     ///
     /// N.B right now this doesn't discern between an invalid row id and a NULL
     /// value at a valid location.
-    pub fn value(&self, row_id: u32) -> Option<&String> {
+    pub fn value(&self, row_id: u32) -> Option<Rc<str>> {
         assert!(
             row_id < self.num_rows(),
             "row_id {:?} out of bounds for {:?} rows",
@@ -412,7 +413,7 @@ impl RLE {
                 // this run-length overlaps desired row id
                 match *encoded_id {
                     NULL_ID => return None,
-                    _ => return Some(&self.index_entries[*encoded_id as usize]),
+                    _ => return Some(self.index_entries[*encoded_id as usize]),
                 };
             }
             total += rl;
@@ -423,10 +424,10 @@ impl RLE {
     /// Materialises the decoded value belonging to the provided encoded id.
     ///
     /// Panics if there is no decoded value for the provided id
-    pub fn decode_id(&self, encoded_id: u32) -> Option<&str> {
+    pub fn decode_id(&self, encoded_id: u32) -> Option<Rc<str>> {
         match encoded_id {
             NULL_ID => None,
-            _ => Some(self.index_entries[encoded_id as usize].as_str()),
+            _ => Some(self.index_entries[encoded_id as usize]),
         }
     }
 
@@ -435,11 +436,11 @@ impl RLE {
     ///
     /// NULL values are represented by None. It is the caller's responsibility
     /// to ensure row ids are a monotonically increasing set.
-    pub fn values<'a>(
-        &'a self,
+    pub fn values(
+        &self,
         row_ids: &[u32],
-        mut dst: Vec<Option<&'a str>>,
-    ) -> Vec<Option<&'a str>> {
+        mut dst: Vec<Option<Rc<str>>>,
+    ) -> Vec<Option<Rc<str>>> {
         dst.clear();
         dst.reserve(row_ids.len());
 
@@ -466,7 +467,7 @@ impl RLE {
             // this encoded entry covers the row_id we want.
             match curr_entry_id {
                 NULL_ID => dst.push(None),
-                _ => dst.push(Some(&self.index_entries[curr_entry_id as usize])),
+                _ => dst.push(Some(self.index_entries[curr_entry_id as usize])),
             }
 
             curr_logical_row_id += 1;
@@ -480,7 +481,7 @@ impl RLE {
     /// Returns the lexicographical minimum value for the provided set of row
     /// ids. NULL values are not considered the minimum value if any non-null
     /// value exists at any of the provided row ids.
-    pub fn min<'a>(&'a self, row_ids: &[u32]) -> Option<&'a String> {
+    pub fn min(&self, row_ids: &[u32]) -> Option<Rc<str>> {
         // exit early if there is only NULL values in the column.
         let col_min = match self.entry_index.keys().next() {
             Some(entry) => entry,
@@ -489,7 +490,7 @@ impl RLE {
 
         let mut curr_logical_row_id = 0;
         let (mut curr_entry_id, mut curr_entry_rl) = self.run_lengths[0];
-        let mut min: Option<&String> = None;
+        let mut min = None;
 
         let mut i = 1;
         for row_id in row_ids {
@@ -508,13 +509,13 @@ impl RLE {
             match curr_entry_id {
                 NULL_ID => {}
                 _ => {
-                    let candidate_min = &self.index_entries[curr_entry_id as usize];
+                    let candidate_min = self.index_entries[curr_entry_id as usize];
                     match min {
                         None => min = Some(candidate_min),
                         Some(curr_min) => {
                             if candidate_min < curr_min {
                                 min = Some(candidate_min);
-                            } else if curr_min == col_min {
+                            } else if curr_min == *col_min {
                                 return min; // we can't find a lower min.
                             }
                         }
@@ -531,7 +532,7 @@ impl RLE {
     /// Returns the lexicographical maximum value for the provided set of row
     /// ids. NULL values are not considered the maximum value if any non-null
     /// value exists at any of the provided row ids.
-    pub fn max<'a>(&'a self, row_ids: &[u32]) -> Option<&'a String> {
+    pub fn max(&self, row_ids: &[u32]) -> Option<Rc<str>> {
         // exit early if there is only NULL values in the column.
         let col_max = match self.entry_index.keys().rev().next() {
             Some(entry) => entry,
@@ -540,7 +541,7 @@ impl RLE {
 
         let mut curr_logical_row_id = 0;
         let (mut curr_entry_id, mut curr_entry_rl) = self.run_lengths[0];
-        let mut max: Option<&String> = None;
+        let mut max = None;
 
         let mut i = 1;
         for row_id in row_ids {
@@ -559,13 +560,13 @@ impl RLE {
             match curr_entry_id {
                 NULL_ID => {}
                 _ => {
-                    let candidate_min = &self.index_entries[curr_entry_id as usize];
+                    let candidate_min = self.index_entries[curr_entry_id as usize];
                     match max {
                         None => max = Some(candidate_min),
                         Some(curr_min) => {
                             if candidate_min > curr_min {
                                 max = Some(candidate_min);
-                            } else if curr_min == col_max {
+                            } else if curr_min == *col_max {
                                 return max; // we can't find a bigger max.
                             }
                         }
@@ -616,14 +617,14 @@ impl RLE {
     /// the column.
     ///
     /// NULL values are represented by None.
-    pub fn all_values<'a>(&'a self, mut dst: Vec<Option<&'a str>>) -> Vec<Option<&'a str>> {
+    pub fn all_values(&self, mut dst: Vec<Option<Rc<str>>>) -> Vec<Option<Rc<str>>> {
         dst.clear();
         dst.reserve(self.num_rows as usize);
 
         for (id, rl) in &self.run_lengths {
             let v = match *id {
                 NULL_ID => None,
-                id => Some(self.index_entries[id as usize].as_str()),
+                id => Some(self.index_entries[id as usize]),
             };
 
             dst.extend(iter::repeat(v).take(*rl as usize));
@@ -636,11 +637,11 @@ impl RLE {
     ///
     /// It is the caller's responsibility to ensure row ids are a monotonically
     /// increasing set.
-    pub fn distinct_values<'a>(
-        &'a self,
+    pub fn distinct_values(
+        &self,
         row_ids: &[u32],
-        mut dst: BTreeSet<Option<&'a String>>,
-    ) -> BTreeSet<Option<&'a String>> {
+        mut dst: BTreeSet<Option<Rc<str>>>,
+    ) -> BTreeSet<Option<Rc<str>>> {
         // TODO(edd): Perf... We can improve on this if we know the column is
         // totally ordered.
         dst.clear();
@@ -681,7 +682,7 @@ impl RLE {
             if !encoded_values[curr_entry_id as usize] {
                 match curr_entry_id {
                     NULL_ID => dst.insert(None),
-                    _ => dst.insert(Some(&self.index_entries[curr_entry_id as usize])),
+                    _ => dst.insert(Some(self.index_entries[curr_entry_id as usize])),
                 };
 
                 encoded_values[curr_entry_id as usize] = true;
@@ -773,7 +774,7 @@ impl RLE {
     /// values. By exposing the current result set to each column (as an
     /// argument to `contains_other_values`) columns can be short-circuited when
     /// they only contain values that have already been discovered.
-    pub fn contains_other_values(&self, values: &BTreeSet<Option<&String>>) -> bool {
+    pub fn contains_other_values(&self, values: &BTreeSet<Option<Rc<str>>>) -> bool {
         let mut encoded_values = self.index_entries.len();
         if !self.contains_null {
             encoded_values -= 1; // this column doesn't encode NULL

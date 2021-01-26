@@ -157,7 +157,7 @@ impl RowGroup {
     pub fn column_could_satisfy_predicate(
         &self,
         column_name: ColumnName<'_>,
-        predicate: &(Operator, Value<'_>),
+        predicate: &(Operator, Value),
     ) -> bool {
         self.meta
             .read_group_could_satisfy_predicate(column_name, predicate)
@@ -195,7 +195,7 @@ impl RowGroup {
         &self,
         names: &[ColumnName<'_>],
         row_ids: RowIDsOption,
-    ) -> (Vec<&str>, Vec<Values<'_>>) {
+    ) -> (Vec<&str>, Vec<Values>) {
         let mut col_names = Vec::with_capacity(names.len());
         let mut col_data = Vec::with_capacity(names.len());
         match row_ids {
@@ -481,7 +481,7 @@ impl RowGroup {
         &'a self,
         dst: &mut ReadGroupResult<'a>,
         groupby_encoded_ids: &[Vec<u32>],
-        aggregate_columns_data: Vec<Values<'a>>,
+        aggregate_columns_data: Vec<Values>,
     ) {
         // An optimised approach to building the hashmap of group keys using a
         // single 128-bit integer as the group key. If grouping is on more than
@@ -501,7 +501,7 @@ impl RowGroup {
         &'a self,
         dst: &mut ReadGroupResult<'a>,
         groupby_encoded_ids: &[Vec<u32>],
-        aggregate_columns_data: &[Values<'a>],
+        aggregate_columns_data: &[Values],
     ) {
         // Now begin building the group keys.
         let mut groups: HashMap<Vec<u32>, Vec<AggregateResult<'_>>> = HashMap::default();
@@ -579,7 +579,7 @@ impl RowGroup {
         &'a self,
         dst: &mut ReadGroupResult<'a>,
         groupby_encoded_ids: &[Vec<u32>],
-        aggregate_columns_data: &[Values<'a>],
+        aggregate_columns_data: &[Values],
     ) {
         let total_rows = groupby_encoded_ids[0].len();
         assert!(groupby_encoded_ids.iter().all(|x| x.len() == total_rows));
@@ -769,7 +769,7 @@ impl RowGroup {
         &'a self,
         dst: &mut ReadGroupResult<'a>,
         groupby_encoded_ids: &[u32],
-        aggregate_columns_data: Vec<Values<'a>>,
+        aggregate_columns_data: Vec<Values>,
     ) {
         let column = self.column_by_name(dst.group_columns[0]);
         assert_eq!(dst.group_columns.len(), aggregate_columns_data.len());
@@ -936,14 +936,14 @@ fn unpack_u128_group_key(group_key_packed: u128, n: usize, mut dst: Vec<u32>) ->
     dst
 }
 
-pub type Predicate<'a> = (ColumnName<'a>, (Operator, Value<'a>));
+pub type Predicate<'a> = (ColumnName<'a>, (Operator, Value));
 
 // A GroupKey is an ordered collection of row values. The order determines which
 // columns the values originated from.
 #[derive(PartialEq, PartialOrd, Clone)]
-pub struct GroupKey<'row_group>(Vec<Value<'row_group>>);
+pub struct GroupKey(Vec<Value>);
 
-impl Eq for GroupKey<'_> {}
+impl Eq for GroupKey {}
 
 // Implementing the `Ord` trait on `GroupKey` means that collections of group
 // keys become sortable. This is typically useful for test because depending on
@@ -961,7 +961,7 @@ impl Eq for GroupKey<'_> {}
 // Be careful sorting group keys in result sets, because other columns
 // associated with the group keys won't be sorted unless the correct `sort`
 // methods are used on the result set implementations.
-impl Ord for GroupKey<'_> {
+impl Ord for GroupKey {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // two group keys must have same length
         assert_eq!(self.0.len(), other.0.len());
@@ -1034,7 +1034,7 @@ impl MetaData {
     pub fn read_group_could_satisfy_predicate(
         &self,
         column_name: ColumnName<'_>,
-        predicate: &(Operator, Value<'_>),
+        predicate: &(Operator, Value),
     ) -> bool {
         let (column_min, column_max) = match self.column_ranges.get(column_name) {
             Some(range) => range,
@@ -1085,7 +1085,7 @@ impl MetaData {
 /// easier to work with and display.
 pub struct ReadFilterResult<'row_group> {
     schema: Vec<(ColumnName<'row_group>, LogicalDataType)>,
-    data: Vec<Values<'row_group>>,
+    data: Vec<Values>,
 }
 
 impl ReadFilterResult<'_> {
@@ -1182,11 +1182,11 @@ pub struct ReadGroupResult<'row_group> {
 
     // row-wise collection of group keys. Each group key contains column-wise
     // values for each of the groupby_columns.
-    group_keys: Vec<GroupKey<'row_group>>,
+    group_keys: Vec<GroupKey>,
 
     // row-wise collection of aggregates. Each aggregate contains column-wise
     // values for each of the aggregate_columns.
-    aggregates: Vec<Vec<AggregateResult<'row_group>>>,
+    aggregates: Vec<Vec<AggregateResult>>,
 }
 
 impl ReadGroupResult<'_> {

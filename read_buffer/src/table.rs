@@ -246,7 +246,7 @@ impl Table {
         group_columns: Vec<ColumnName<'a>>,
         aggregates: Vec<(ColumnName<'a>, AggregateType)>,
         window: i64,
-    ) -> BTreeMap<GroupKey<'_>, Vec<(ColumnName<'a>, AggregateResult<'_>)>> {
+    ) -> BTreeMap<GroupKey, Vec<(ColumnName<'a>, AggregateResult)>> {
         // identify segments where time range and predicates match could match
         // using segment meta data, and then execute against those segments and
         // merge results.
@@ -260,7 +260,7 @@ impl Table {
         time_range: (i64, i64),
         predicates: &[(&str, &str)],
         aggregates: Vec<(ColumnName<'a>, AggregateType)>,
-    ) -> Vec<(ColumnName<'a>, AggregateResult<'_>)> {
+    ) -> Vec<(ColumnName<'a>, AggregateResult)> {
         // The fast path where there are no predicates or a time range to apply.
         // We just want the equivalent of column statistics.
         if predicates.is_empty() {
@@ -330,7 +330,7 @@ impl Table {
     // Note: this returns an option at the moment because there is an assumption
     // that timestamps could be NULL. I think we could add a constraint to make
     // timestamps non-null.
-    fn first(&self, column_name: &str, time_lower_bound: i64) -> Option<(i64, Value<'_>)> {
+    fn first(&self, column_name: &str, time_lower_bound: i64) -> Option<(i64, Value)> {
         // Find the segment(s) that best satisfy the lower time bound. These will
         // be the segments (or more likely, segment) that has the lowest min
         // time-range.
@@ -346,7 +346,7 @@ impl Table {
 
     /// The inverse of `first`. Of note here is that the returned value must
     /// have a
-    fn last(&self, column_name: &str, time_upper_bound: i64) -> Option<(i64, Value<'_>)> {
+    fn last(&self, column_name: &str, time_upper_bound: i64) -> Option<(i64, Value)> {
         // Find the segment(s) that best satisfy the upper time bound. These will
         // be the segments (or more likely, segment) that has the highest max
         // time-range.
@@ -361,7 +361,7 @@ impl Table {
     }
 
     /// The minimum non-null value in the column for the table.
-    fn min(&self, column_name: &str, time_range: (i64, i64)) -> Value<'_> {
+    fn min(&self, column_name: &str, time_range: (i64, i64)) -> Value {
         // Loop over segments, skipping any that don't satisfy the time range.
         // Any segments completely overlapped can have a candidate min taken
         // directly from their zone map. Partially overlapped segments will be
@@ -372,7 +372,7 @@ impl Table {
     }
 
     /// The maximum non-null value in the column for the table.
-    fn max(&self, column_name: &str, time_range: (i64, i64)) -> Value<'_> {
+    fn max(&self, column_name: &str, time_range: (i64, i64)) -> Value {
         // Loop over segments, skipping any that don't satisfy the time range.
         // Any segments completely overlapped can have a candidate max taken
         // directly from their zone map. Partially overlapped segments will be

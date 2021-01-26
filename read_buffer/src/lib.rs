@@ -700,13 +700,14 @@ mod test {
     }
 
     // Helper function to assert the contents of a column on a record batch.
-    fn assert_rb_column_equals(rb: &RecordBatch, col_name: &str, exp: &Values<'_>) {
+    fn assert_rb_column_equals(rb: &RecordBatch, col_name: &str, exp: &Values) {
         let got_column = rb.column(rb.schema().index_of(col_name).unwrap());
 
         match exp {
             Values::String(exp_data) => {
                 let arr: &StringArray = got_column.as_any().downcast_ref::<StringArray>().unwrap();
-                assert_eq!(&arr.iter().collect::<Vec<_>>(), exp_data);
+                let exp: Vec<_> = exp_data.iter().map(|v| v.map(|vi| vi.as_ref())).collect();
+                assert_eq!(arr.iter().collect::<Vec<_>>(), exp);
             }
             Values::I64(exp_data) => {
                 let arr: &Int64Array = got_column.as_any().downcast_ref::<Int64Array>().unwrap();
@@ -786,7 +787,8 @@ mod test {
                         }
                     })
                     .collect::<Vec<_>>();
-                assert_eq!(&got_data, exp_data);
+                let exp: Vec<_> = exp_data.iter().map(|v| v.map(|vi| vi.as_ref())).collect();
+                assert_eq!(got_data, exp);
             }
         }
     }
@@ -797,22 +799,22 @@ mod test {
 
         db.upsert_partition("hour_1", 22, "Coolverine", gen_recordbatch());
         let data = db.table_names("hour_1", &[22], &[]).unwrap().unwrap();
-        assert_rb_column_equals(&data, "table", &Values::String(vec![Some("Coolverine")]));
+        assert_rb_column_equals(&data, "table", &Values::String(vec![Some("Coolverine".into())]));
 
         db.upsert_partition("hour_1", 22, "Coolverine", gen_recordbatch());
         let data = db.table_names("hour_1", &[22], &[]).unwrap().unwrap();
-        assert_rb_column_equals(&data, "table", &Values::String(vec![Some("Coolverine")]));
+        assert_rb_column_equals(&data, "table", &Values::String(vec![Some("Coolverine".into())]));
 
         db.upsert_partition("hour_1", 2, "Coolverine", gen_recordbatch());
         let data = db.table_names("hour_1", &[22], &[]).unwrap().unwrap();
-        assert_rb_column_equals(&data, "table", &Values::String(vec![Some("Coolverine")]));
+        assert_rb_column_equals(&data, "table", &Values::String(vec![Some("Coolverine".into())]));
 
         db.upsert_partition("hour_1", 2, "20 Size", gen_recordbatch());
         let data = db.table_names("hour_1", &[22], &[]).unwrap().unwrap();
         assert_rb_column_equals(
             &data,
             "table",
-            &Values::String(vec![Some("20 Size"), Some("Coolverine")]),
+            &Values::String(vec![Some("20 Size".into()), Some("Coolverine".into())]),
         );
     }
 
@@ -870,7 +872,7 @@ mod test {
             "env",
             (
                 column::cmp::Operator::Equal,
-                column::Value::String("us-west"),
+                column::Value::String("us-west".into()),
             ),
         ));
 
@@ -884,8 +886,8 @@ mod test {
             )
             .unwrap();
 
-        let exp_env_values = Values::String(vec![Some("us-west")]);
-        let exp_region_values = Values::String(vec![Some("west")]);
+        let exp_env_values = Values::String(vec![Some("us-west".into())]);
+        let exp_region_values = Values::String(vec![Some("west".into())]);
         let exp_counter_values = Values::F64(vec![1.2]);
 
         let first_row_group = itr.next().unwrap();
@@ -962,7 +964,7 @@ mod test {
             "env",
             (
                 column::cmp::Operator::Equal,
-                column::Value::String("us-west"),
+                column::Value::String("us-west".into()),
             ),
         ));
 
@@ -976,8 +978,8 @@ mod test {
             )
             .unwrap();
 
-        let exp_env_values = Values::String(vec![Some("us-west")]);
-        let exp_region_values = Values::String(vec![Some("west")]);
+        let exp_env_values = Values::String(vec![Some("us-west".into())]);
+        let exp_region_values = Values::String(vec![Some("west".into())]);
         let exp_counter_values = Values::F64(vec![1.2]);
 
         let first_row_group = itr.next().unwrap();

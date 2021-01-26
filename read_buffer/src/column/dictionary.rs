@@ -2,6 +2,7 @@ pub mod plain;
 pub mod rle;
 
 use std::collections::BTreeSet;
+use std::rc::Rc;
 
 use either::Either;
 
@@ -41,7 +42,7 @@ impl Encoding {
         }
     }
 
-    pub fn push(&mut self, v: String) {
+    pub fn push(&mut self, v: Rc<str>) {
         match self {
             Encoding::RLE(ref mut enc) => enc.push(v),
             Encoding::Plain(ref mut enc) => enc.push(v),
@@ -58,7 +59,7 @@ impl Encoding {
     /// Adds additional repetitions of the provided value to the encoded data.
     /// It is the caller's responsibility to ensure that the dictionary encoded
     /// remains sorted.
-    pub fn push_additional(&mut self, v: Option<String>, additional: u32) {
+    pub fn push_additional(&mut self, v: Option<Rc<str>>, additional: u32) {
         match self {
             Encoding::RLE(ref mut env) => env.push_additional(v, additional),
             Encoding::Plain(ref mut env) => env.push_additional(v, additional),
@@ -81,7 +82,7 @@ impl Encoding {
 
     /// Populates the provided destination container with the row ids satisfying
     /// the provided predicate.
-    pub fn row_ids_filter(&self, value: &str, op: &cmp::Operator, dst: RowIDs) -> RowIDs {
+    pub fn row_ids_filter(&self, value: Rc<str>, op: &cmp::Operator, dst: RowIDs) -> RowIDs {
         match self {
             Encoding::RLE(enc) => enc.row_ids_filter(value, op, dst),
             Encoding::Plain(enc) => enc.row_ids_filter(value, op, dst),
@@ -128,7 +129,7 @@ impl Encoding {
     //
     //
 
-    pub fn dictionary(&self) -> Vec<&String> {
+    pub fn dictionary(&self) -> Vec<Rc<str>> {
         match self {
             Encoding::RLE(enc) => enc.dictionary(),
             Encoding::Plain(enc) => enc.dictionary(),
@@ -139,7 +140,7 @@ impl Encoding {
     ///
     /// N.B right now this doesn't discern between an invalid row id and a NULL
     /// value at a valid location.
-    fn value(&self, row_id: u32) -> Option<&String> {
+    fn value(&self, row_id: u32) -> Option<Rc<str>> {
         match self {
             Encoding::RLE(enc) => enc.value(row_id),
             Encoding::Plain(enc) => enc.value(row_id),
@@ -149,7 +150,7 @@ impl Encoding {
     /// Materialises the decoded value belonging to the provided encoded id.
     ///
     /// Panics if there is no decoded value for the provided id
-    fn decode_id(&self, encoded_id: u32) -> Option<&str> {
+    fn decode_id(&self, encoded_id: u32) -> Option<Rc<str>> {
         match self {
             Encoding::RLE(enc) => enc.decode_id(encoded_id),
             Encoding::Plain(enc) => enc.decode_id(encoded_id),
@@ -161,11 +162,11 @@ impl Encoding {
     ///
     /// NULL values are represented by None. It is the caller's responsibility
     /// to ensure row ids are a monotonically increasing set.
-    pub fn values<'a>(
-        &'a self,
+    pub fn values(
+        &self,
         row_ids: &[u32],
-        dst: Vec<Option<&'a str>>,
-    ) -> Vec<Option<&'a str>> {
+        dst: Vec<Option<Rc<str>>>,
+    ) -> Vec<Option<Rc<str>>> {
         match self {
             Encoding::RLE(enc) => enc.values(row_ids, dst),
             Encoding::Plain(enc) => enc.values(row_ids, dst),
@@ -175,7 +176,7 @@ impl Encoding {
     /// Returns the lexicographical minimum value for the provided set of row
     /// ids. NULL values are not considered the minimum value if any non-null
     /// value exists at any of the provided row ids.
-    fn min<'a>(&'a self, row_ids: &[u32]) -> Option<&'a String> {
+    fn min(&self, row_ids: &[u32]) -> Option<Rc<str>> {
         match self {
             Encoding::RLE(enc) => enc.min(row_ids),
             Encoding::Plain(enc) => enc.min(row_ids),
@@ -185,7 +186,7 @@ impl Encoding {
     /// Returns the lexicographical maximum value for the provided set of row
     /// ids. NULL values are not considered the maximum value if any non-null
     /// value exists at any of the provided row ids.
-    fn max<'a>(&'a self, row_ids: &[u32]) -> Option<&'a String> {
+    fn max(&self, row_ids: &[u32]) -> Option<Rc<str>> {
         match self {
             Encoding::RLE(enc) => enc.max(row_ids),
             Encoding::Plain(enc) => enc.max(row_ids),
@@ -205,7 +206,7 @@ impl Encoding {
     /// the column.
     ///
     /// NULL values are represented by None.
-    fn all_values<'a>(&'a mut self, dst: Vec<Option<&'a str>>) -> Vec<Option<&'a str>> {
+    fn all_values(&mut self, dst: Vec<Option<Rc<str>>>) -> Vec<Option<Rc<str>>> {
         match self {
             Encoding::RLE(enc) => enc.all_values(dst),
             Encoding::Plain(enc) => enc.all_values(dst),
@@ -217,11 +218,11 @@ impl Encoding {
     ///
     /// It is the caller's responsibility to ensure row ids are a monotonically
     /// increasing set.
-    fn distinct_values<'a>(
-        &'a self,
+    fn distinct_values(
+        &self,
         row_ids: &[u32],
-        dst: BTreeSet<Option<&'a String>>,
-    ) -> BTreeSet<Option<&'a String>> {
+        dst: BTreeSet<Option<Rc<str>>>,
+    ) -> BTreeSet<Option<Rc<str>>> {
         match self {
             Encoding::RLE(enc) => enc.distinct_values(row_ids, dst),
             Encoding::Plain(enc) => enc.distinct_values(row_ids, dst),
@@ -310,11 +311,11 @@ mod test {
         ];
 
         for enc in encodings {
-            _push(enc);
+            inner_push(enc);
         }
     }
 
-    fn _push(mut enc: Encoding) {
+    fn inner_push(mut enc: Encoding) {
         enc.push_additional(Some("hello".to_string()), 1);
         enc.push_additional(None, 3);
         enc.push("world".to_string());
@@ -374,11 +375,11 @@ mod test {
         ];
 
         for enc in encodings {
-            _push_additional_first_run_length(enc);
+            inner_push_additional_first_run_length(enc);
         }
     }
 
-    fn _push_additional_first_run_length(mut enc: Encoding) {
+    fn inner_push_additional_first_run_length(mut enc: Encoding) {
         let name = enc.debug_name();
 
         enc.push_additional(Some("world".to_string()), 1);
@@ -413,11 +414,11 @@ mod test {
         ];
 
         for enc in encodings {
-            _row_ids_filter_equal(enc);
+            inner_row_ids_filter_equal(enc);
         }
     }
 
-    fn _row_ids_filter_equal(mut enc: Encoding) {
+    fn inner_row_ids_filter_equal(mut enc: Encoding) {
         let name = enc.debug_name();
         enc.push_additional(Some("east".to_string()), 3); // 0, 1, 2
         enc.push_additional(Some("north".to_string()), 1); // 3
@@ -460,11 +461,11 @@ mod test {
         ];
 
         for enc in encodings {
-            _row_ids_filter_equal_no_null(enc);
+            inner_row_ids_filter_equal_no_null(enc);
         }
     }
 
-    fn _row_ids_filter_equal_no_null(mut enc: Encoding) {
+    fn inner_row_ids_filter_equal_no_null(mut enc: Encoding) {
         let name = enc.debug_name();
         enc.push_additional(Some("east".to_string()), 2);
         enc.push_additional(Some("west".to_string()), 1);
@@ -481,11 +482,11 @@ mod test {
         ];
 
         for enc in encodings {
-            _row_ids_filter_cmp(enc);
+            inner_row_ids_filter_cmp(enc);
         }
     }
 
-    fn _row_ids_filter_cmp(mut enc: Encoding) {
+    fn inner_row_ids_filter_cmp(mut enc: Encoding) {
         let name = enc.debug_name();
 
         enc.push_additional(Some("east".to_string()), 3); // 0, 1, 2
@@ -712,11 +713,11 @@ mod test {
         ];
 
         for enc in encodings {
-            _row_ids_null(enc);
+            inner_row_ids_null(enc);
         }
     }
 
-    fn _row_ids_null(mut enc: Encoding) {
+    fn inner_row_ids_null(mut enc: Encoding) {
         let name = enc.debug_name();
         enc.push_additional(Some("east".to_string()), 3); // 0, 1, 2
         enc.push_additional(None, 3); // 3, 4, 5
@@ -741,11 +742,11 @@ mod test {
         ];
 
         for enc in encodings {
-            _group_row_ids(enc);
+            inner_group_row_ids(enc);
         }
     }
 
-    fn _group_row_ids(mut enc: Encoding) {
+    fn inner_group_row_ids(mut enc: Encoding) {
         let name = enc.debug_name();
 
         enc.push_additional(Some("east".to_string()), 4); // 0, 1, 2, 3
@@ -791,11 +792,11 @@ mod test {
         ];
 
         for enc in encodings {
-            _dictionary(enc);
+            inner_dictionary(enc);
         }
     }
 
-    fn _dictionary(mut enc: Encoding) {
+    fn inner_dictionary(mut enc: Encoding) {
         let name = enc.debug_name();
         assert!(enc.dictionary().is_empty());
 
@@ -820,11 +821,11 @@ mod test {
         ];
 
         for enc in encodings {
-            _value(enc);
+            inner_value(enc);
         }
     }
 
-    fn _value(mut enc: Encoding) {
+    fn inner_value(mut enc: Encoding) {
         enc.push_additional(Some("east".to_string()), 3); // 0, 1, 2
         enc.push_additional(Some("north".to_string()), 1); // 3
         enc.push_additional(Some("east".to_string()), 5); // 4, 5, 6, 7, 8
@@ -857,11 +858,11 @@ mod test {
         ];
 
         for enc in encodings {
-            _values(enc);
+            inner_values(enc);
         }
     }
 
-    fn _values(mut enc: Encoding) {
+    fn inner_values(mut enc: Encoding) {
         let name = enc.debug_name();
 
         enc.push_additional(Some("east".to_string()), 3); // 0, 1, 2
@@ -893,11 +894,11 @@ mod test {
         ];
 
         for enc in encodings {
-            _all_values(enc);
+            inner_all_values(enc);
         }
     }
 
-    fn _all_values(mut enc: Encoding) {
+    fn inner_all_values(mut enc: Encoding) {
         let name = enc.debug_name();
 
         enc.push_none();
@@ -918,11 +919,11 @@ mod test {
         ];
 
         for enc in encodings {
-            _encoded_values(enc);
+            inner_encoded_values(enc);
         }
     }
 
-    fn _encoded_values(mut enc: Encoding) {
+    fn inner_encoded_values(mut enc: Encoding) {
         let name = enc.debug_name();
 
         enc.push_additional(Some("east".to_string()), 3); // 0, 1, 2
@@ -949,11 +950,11 @@ mod test {
         ];
 
         for enc in encodings {
-            _all_encoded_values(enc);
+            inner_all_encoded_values(enc);
         }
     }
 
-    fn _all_encoded_values(mut enc: Encoding) {
+    fn inner_all_encoded_values(mut enc: Encoding) {
         let name = enc.debug_name();
 
         enc.push_additional(Some("east".to_string()), 3);

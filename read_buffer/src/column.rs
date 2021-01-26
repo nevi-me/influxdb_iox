@@ -6,6 +6,7 @@ pub mod fixed_null;
 use std::collections::BTreeSet;
 use std::convert::TryFrom;
 use std::sync::Arc;
+use std::rc::Rc;
 
 use arrow::array;
 use croaring::Bitmap;
@@ -32,7 +33,7 @@ pub const TIME_COLUMN_TYPE: &str = "timestamp";
 /// column have the same physical type.
 pub enum Column {
     // A column of dictionary run-length encoded values.
-    String(MetaData<String>, StringEncoding),
+    String(MetaData<Rc<str>>, StringEncoding),
 
     // A column of single or double-precision floating point values.
     Float(MetaData<f64>, FloatEncoding),
@@ -134,11 +135,11 @@ impl Column {
         }
     }
 
-    pub fn column_min(&self) -> Value<'_> {
+    pub fn column_min(&self) -> Value {
         todo!()
     }
 
-    pub fn column_max(&self) -> Value<'_> {
+    pub fn column_max(&self) -> Value {
         todo!()
     }
 
@@ -147,7 +148,7 @@ impl Column {
     //
 
     /// The value present at the provided logical row id.
-    pub fn value(&self, row_id: u32) -> Value<'_> {
+    pub fn value(&self, row_id: u32) -> Value {
         assert!(
             row_id < self.num_rows(),
             format!(
@@ -168,7 +169,7 @@ impl Column {
     }
 
     /// All values present at the provided logical row ids.
-    pub fn values(&self, row_ids: &[u32]) -> Values<'_> {
+    pub fn values(&self, row_ids: &[u32]) -> Values {
         assert!(
             row_ids.len() as u32 <= self.num_rows(),
             format!(
@@ -189,7 +190,7 @@ impl Column {
     }
 
     /// All logical values in the column.
-    pub fn all_values(&self) -> Values<'_> {
+    pub fn all_values(&self) -> Values {
         match &self {
             Column::String(_, data) => data.all_values(),
             Column::Float(_, data) => data.all_values(),
@@ -201,7 +202,7 @@ impl Column {
     }
 
     /// The value present at the provided logical row id.
-    pub fn decode_id(&self, encoded_id: u32) -> Value<'_> {
+    pub fn decode_id(&self, encoded_id: u32) -> Value {
         match &self {
             Column::String(_, data) => data.decode_id(encoded_id),
             Column::ByteArray(_, _) => todo!(),
@@ -210,7 +211,7 @@ impl Column {
     }
 
     // The distinct set of values found at the logical row ids.
-    pub fn distinct_values(&self, row_ids: &[u32]) -> ValueSet<'_> {
+    pub fn distinct_values(&self, row_ids: &[u32]) -> ValueSet {
         assert!(
             row_ids.len() as u32 <= self.num_rows(),
             format!(
@@ -285,7 +286,7 @@ impl Column {
     pub fn row_ids_filter(
         &self,
         op: &cmp::Operator,
-        value: &Value<'_>,
+        value: &Value,
         dst: RowIDs,
     ) -> RowIDsOption {
         // If we can get an answer using only the meta-data on the column then
@@ -318,8 +319,8 @@ impl Column {
     /// that are often found on timestamp columns.
     pub fn row_ids_filter_range(
         &self,
-        low: &(cmp::Operator, Value<'_>),
-        high: &(cmp::Operator, Value<'_>),
+        low: &(cmp::Operator, Value),
+        high: &(cmp::Operator, Value),
         dst: RowIDs,
     ) -> RowIDsOption {
         let l = self.evaluate_predicate_on_meta(&low.0, &low.1);
@@ -377,7 +378,7 @@ impl Column {
     //
     // `None` indicates that the column may contain some matching rows and the
     // predicate should be directly applied to the column.
-    fn evaluate_predicate_on_meta(&self, op: &cmp::Operator, value: &Value<'_>) -> PredicateMatch {
+    fn evaluate_predicate_on_meta(&self, op: &cmp::Operator, value: &Value) -> PredicateMatch {
         match op {
             // When the predicate is == and the metadata range indicates the column
             // can't contain `value` then the column doesn't need to be read.
@@ -415,7 +416,7 @@ impl Column {
     }
 
     // Helper method to determine if the column possibly contains this value
-    fn might_contain_value(&self, value: &Value<'_>) -> bool {
+    fn might_contain_value(&self, value: &Value) -> bool {
         match &self {
             Column::String(meta, _) => {
                 if let Value::String(other) = value {
@@ -451,7 +452,7 @@ impl Column {
 
     // Helper method to determine if the predicate matches all the values in
     // the column.
-    fn predicate_matches_all_values(&self, op: &cmp::Operator, value: &Value<'_>) -> bool {
+    fn predicate_matches_all_values(&self, op: &cmp::Operator, value: &Value) -> bool {
         match &self {
             Column::String(meta, data) => {
                 if data.contains_null() {
@@ -508,7 +509,7 @@ impl Column {
 
     // Helper method to determine if the predicate can not possibly match any
     // values in the column.
-    fn predicate_matches_no_values(&self, op: &cmp::Operator, value: &Value<'_>) -> bool {
+    fn predicate_matches_no_values(&self, op: &cmp::Operator, value: &Value) -> bool {
         match &self {
             Column::String(meta, data) => {
                 if let Value::String(other) = value {
@@ -535,7 +536,7 @@ impl Column {
     //
 
     /// The minimum value present within the set of rows.
-    pub fn min(&self, row_ids: &[u32]) -> Value<'_> {
+    pub fn min(&self, row_ids: &[u32]) -> Value {
         assert!(row_ids.len() as u32 <= self.num_rows());
 
         match &self {
@@ -549,7 +550,7 @@ impl Column {
     }
 
     /// The minimum value present within the set of rows.
-    pub fn max(&self, row_ids: &[u32]) -> Value<'_> {
+    pub fn max(&self, row_ids: &[u32]) -> Value {
         assert!(row_ids.len() as u32 <= self.num_rows());
 
         match &self {
@@ -638,7 +639,7 @@ impl LogicalDataType {
     }
 }
 
-#[derive(Default, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 // The meta-data for a column
 pub struct MetaData<T>
 where
@@ -656,12 +657,26 @@ where
     properties: ColumnProperties,
 }
 
+impl<T> Default for MetaData<T>
+where
+    T: PartialOrd + std::fmt::Debug,
+{
+    fn default() -> Self {
+        Self {
+            size: 0,
+            rows: 0,
+            range: None,
+            properties: ColumnProperties::default(),
+        }
+    }
+}
+
 impl<T: PartialOrd + std::fmt::Debug> MetaData<T> {
-    fn might_contain_value<U>(&self, v: U) -> bool
+    fn might_contain_value<U>(&self, u: U) -> bool
     where
-        U: Into<T>,
+        U: PartialOrd<T>,
+        T: PartialOrd<U>,
     {
-        let u = U::into(v);
         match &self.range {
             Some(range) => range.0 <= u && u <= range.1,
             None => false,
@@ -739,7 +754,7 @@ impl StringEncoding {
     }
 
     /// Returns the logical value found at the provided row id.
-    pub fn value(&self, row_id: u32) -> Value<'_> {
+    pub fn value(&self, row_id: u32) -> Value {
         match &self {
             Self::RLEDictionary(c) => match c.value(row_id) {
                 Some(v) => Value::String(v),
@@ -755,7 +770,7 @@ impl StringEncoding {
     /// All values present at the provided logical row ids.
     ///
     /// TODO(edd): perf - pooling of destination vectors.
-    pub fn values(&self, row_ids: &[u32]) -> Values<'_> {
+    pub fn values(&self, row_ids: &[u32]) -> Values {
         match &self {
             Self::RLEDictionary(c) => Values::String(c.values(row_ids, vec![])),
             Self::Dictionary(c) => Values::String(c.values(row_ids, vec![])),
@@ -765,7 +780,7 @@ impl StringEncoding {
     /// All values in the column.
     ///
     /// TODO(edd): perf - pooling of destination vectors.
-    pub fn all_values(&self) -> Values<'_> {
+    pub fn all_values(&self) -> Values {
         match &self {
             Self::RLEDictionary(c) => Values::String(c.all_values(vec![])),
             Self::Dictionary(c) => Values::String(c.all_values(vec![])),
@@ -773,7 +788,7 @@ impl StringEncoding {
     }
 
     /// Returns the logical value for the specified encoded representation.
-    pub fn decode_id(&self, encoded_id: u32) -> Value<'_> {
+    pub fn decode_id(&self, encoded_id: u32) -> Value {
         match &self {
             Self::RLEDictionary(c) => match c.decode_id(encoded_id) {
                 Some(v) => Value::String(v),
@@ -789,7 +804,7 @@ impl StringEncoding {
     /// Returns the distinct set of values found at the provided row ids.
     ///
     /// TODO(edd): perf - pooling of destination sets.
-    pub fn distinct_values(&self, row_ids: &[u32]) -> ValueSet<'_> {
+    pub fn distinct_values(&self, row_ids: &[u32]) -> ValueSet {
         match &self {
             Self::RLEDictionary(c) => ValueSet::String(c.distinct_values(row_ids, BTreeSet::new())),
             Self::Dictionary(c) => ValueSet::String(c.distinct_values(row_ids, BTreeSet::new())),
@@ -797,7 +812,7 @@ impl StringEncoding {
     }
 
     /// Returns the row ids that satisfy the provided predicate.
-    pub fn row_ids_filter(&self, op: &cmp::Operator, value: &str, dst: RowIDs) -> RowIDs {
+    pub fn row_ids_filter(&self, op: &cmp::Operator, value: Rc<str>, dst: RowIDs) -> RowIDs {
         match &self {
             Self::RLEDictionary(c) => c.row_ids_filter(value, op, dst),
             Self::Dictionary(c) => c.row_ids_filter(value, op, dst),
@@ -807,7 +822,7 @@ impl StringEncoding {
     /// The lexicographic minimum non-null value at the rows specified, or the
     /// NULL value if the column only contains NULL values at the provided row
     /// ids.
-    pub fn min(&self, row_ids: &[u32]) -> Value<'_> {
+    pub fn min(&self, row_ids: &[u32]) -> Value {
         match &self {
             Self::RLEDictionary(c) => match c.min(row_ids) {
                 Some(min) => Value::String(min),
@@ -823,7 +838,7 @@ impl StringEncoding {
     /// The lexicographic maximum non-null value at the rows specified, or the
     /// NULL value if the column only contains NULL values at the provided row
     /// ids.
-    pub fn max(&self, row_ids: &[u32]) -> Value<'_> {
+    pub fn max(&self, row_ids: &[u32]) -> Value {
         match &self {
             Self::RLEDictionary(c) => match c.max(row_ids) {
                 Some(max) => Value::String(max),
@@ -858,7 +873,7 @@ impl StringEncoding {
 
         for i in 0..arr.len() {
             if !arr.is_null(i) {
-                dictionary.insert(arr.value(i).to_string());
+                dictionary.insert(arr.value(i).into());
             }
         }
 
@@ -889,7 +904,7 @@ impl StringEncoding {
             }
 
             match prev {
-                Some(x) => data.push_additional(Some(x.to_string()), count),
+                Some(x) => data.push_additional(Some(x.into()), count),
                 None => data.push_additional(None, count),
             }
             prev = next;
@@ -898,7 +913,7 @@ impl StringEncoding {
 
         // Add final batch to column if any
         match prev {
-            Some(x) => data.push_additional(Some(x.to_string()), count),
+            Some(x) => data.push_additional(Some(x.into()), count),
             None => data.push_additional(None, count),
         };
 
@@ -955,11 +970,11 @@ impl StringEncoding {
         // RLE creation.
 
         // build a sorted dictionary.
-        let mut dictionary = BTreeSet::new();
+        let mut dictionary: BTreeSet<Rc<str>> = BTreeSet::new();
 
         for v in arr {
             if let Some(x) = v {
-                dictionary.insert(x.to_string());
+                dictionary.insert((*x).into());
             }
         }
 
@@ -975,7 +990,7 @@ impl StringEncoding {
             }
 
             match prev {
-                Some(x) => data.push_additional(Some(x.to_string()), count),
+                Some(x) => data.push_additional(Some((*x).into()), count),
                 None => data.push_additional(None, count),
             }
             prev = next;
@@ -984,7 +999,7 @@ impl StringEncoding {
 
         // Add final batch to column if any
         match prev {
-            Some(x) => data.push_additional(Some(x.to_string()), count),
+            Some(x) => data.push_additional(Some((*x).into()), count),
             None => data.push_additional(None, count),
         };
 
@@ -1000,7 +1015,7 @@ impl StringEncoding {
         // RLE creation.
 
         // build a sorted dictionary.
-        let dictionary = arr.iter().map(|x| x.to_string()).collect::<BTreeSet<_>>();
+        let dictionary = arr.iter().map(|&x| x.into()).collect::<BTreeSet<Rc<str>>>();
         let mut data = dictionary::RLE::with_dictionary(dictionary);
 
         let mut prev = &arr[0];
@@ -1011,19 +1026,19 @@ impl StringEncoding {
                 continue;
             }
 
-            data.push_additional(Some(prev.to_string()), count);
+            data.push_additional(Some((*prev).into()), count);
             prev = next;
             count = 1;
         }
 
         // Add final batch to column if any
-        data.push_additional(Some(prev.to_string()), count);
+        data.push_additional(Some((*prev).into()), count);
 
         Self::RLEDictionary(data)
     }
 
     // generates metadata for an encoded column.
-    pub fn meta_from_data(data: &Self) -> MetaData<String> {
+    pub fn meta_from_data(data: &Self) -> MetaData<Rc<str>> {
         match data {
             Self::RLEDictionary(data) => {
                 let dictionary = data.dictionary();
@@ -1104,7 +1119,7 @@ impl IntegerEncoding {
     }
 
     /// Returns the logical value found at the provided row id.
-    pub fn value(&self, row_id: u32) -> Value<'_> {
+    pub fn value(&self, row_id: u32) -> Value {
         match &self {
             // N.B., The `Scalar` variant determines the physical type `U` that
             // `c.value` should return as the logical type
@@ -1139,7 +1154,7 @@ impl IntegerEncoding {
     ///
     /// TODO(edd): perf - provide a pooling mechanism for these destination
     /// vectors so that they can be re-used.
-    pub fn values(&self, row_ids: &[u32]) -> Values<'_> {
+    pub fn values(&self, row_ids: &[u32]) -> Values {
         match &self {
             // signed 64-bit variants - logical type is i64 for all these
             Self::I64I64(c) => Values::I64(c.values::<i64>(row_ids, vec![])),
@@ -1165,7 +1180,7 @@ impl IntegerEncoding {
     ///
     /// TODO(edd): perf - provide a pooling mechanism for these destination
     /// vectors so that they can be re-used.
-    pub fn all_values(&self) -> Values<'_> {
+    pub fn all_values(&self) -> Values {
         match &self {
             // signed 64-bit variants - logical type is i64 for all these
             Self::I64I64(c) => Values::I64(c.all_values::<i64>(vec![])),
@@ -1306,7 +1321,7 @@ impl IntegerEncoding {
         }
     }
 
-    pub fn min(&self, row_ids: &[u32]) -> Value<'_> {
+    pub fn min(&self, row_ids: &[u32]) -> Value {
         match &self {
             IntegerEncoding::I64I64(c) => Value::Scalar(Scalar::I64(c.min(row_ids))),
             IntegerEncoding::I64I32(c) => Value::Scalar(Scalar::I64(c.min(row_ids))),
@@ -1330,7 +1345,7 @@ impl IntegerEncoding {
         }
     }
 
-    pub fn max(&self, row_ids: &[u32]) -> Value<'_> {
+    pub fn max(&self, row_ids: &[u32]) -> Value {
         match &self {
             IntegerEncoding::I64I64(c) => Value::Scalar(Scalar::I64(c.max(row_ids))),
             IntegerEncoding::I64I32(c) => Value::Scalar(Scalar::I64(c.max(row_ids))),
@@ -1411,7 +1426,7 @@ impl FloatEncoding {
     }
 
     /// Returns the logical value found at the provided row id.
-    pub fn value(&self, row_id: u32) -> Value<'_> {
+    pub fn value(&self, row_id: u32) -> Value {
         match &self {
             Self::Fixed64(c) => Value::Scalar(Scalar::F64(c.value(row_id))),
             Self::FixedNull64(c) => match c.value(row_id) {
@@ -1424,7 +1439,7 @@ impl FloatEncoding {
     /// Returns the logical values found at the provided row ids.
     ///
     /// TODO(edd): perf - pooling of destination vectors.
-    pub fn values(&self, row_ids: &[u32]) -> Values<'_> {
+    pub fn values(&self, row_ids: &[u32]) -> Values {
         match &self {
             Self::Fixed64(c) => Values::F64(c.values::<f64>(row_ids, vec![])),
             Self::FixedNull64(c) => Values::F64N(c.values(row_ids, vec![])),
@@ -1434,7 +1449,7 @@ impl FloatEncoding {
     /// Returns all logical values in the column.
     ///
     /// TODO(edd): perf - pooling of destination vectors.
-    pub fn all_values(&self) -> Values<'_> {
+    pub fn all_values(&self) -> Values {
         match &self {
             Self::Fixed64(c) => Values::F64(c.all_values::<f64>(vec![])),
             Self::FixedNull64(c) => Values::F64N(c.all_values(vec![])),
@@ -1472,7 +1487,7 @@ impl FloatEncoding {
         }
     }
 
-    pub fn min(&self, row_ids: &[u32]) -> Value<'_> {
+    pub fn min(&self, row_ids: &[u32]) -> Value {
         match &self {
             FloatEncoding::Fixed64(c) => Value::Scalar(Scalar::F64(c.min(row_ids))),
             FloatEncoding::FixedNull64(c) => match c.min(row_ids) {
@@ -1482,7 +1497,7 @@ impl FloatEncoding {
         }
     }
 
-    pub fn max(&self, row_ids: &[u32]) -> Value<'_> {
+    pub fn max(&self, row_ids: &[u32]) -> Value {
         match &self {
             FloatEncoding::Fixed64(c) => Value::Scalar(Scalar::F64(c.max(row_ids))),
             FloatEncoding::FixedNull64(c) => match c.max(row_ids) {
@@ -2242,8 +2257,8 @@ impl std::fmt::Display for AggregateType {
 
 /// These variants hold aggregates, which are the results of applying aggregates
 /// to column data.
-#[derive(Debug, Copy, Clone)]
-pub enum AggregateResult<'a> {
+#[derive(Debug, Clone)]
+pub enum AggregateResult {
     // Any type of column can have rows counted. NULL values do not contribute
     // to the count. If all rows are NULL then count will be `0`.
     Count(u64),
@@ -2257,21 +2272,21 @@ pub enum AggregateResult<'a> {
     Sum(Scalar),
 
     // The minimum value in the column data.
-    Min(Value<'a>),
+    Min(Value),
 
     // The maximum value in the column data.
-    Max(Value<'a>),
+    Max(Value),
 
     // The first value in the column data and the corresponding timestamp.
-    First(Option<(i64, Value<'a>)>),
+    First(Option<(i64, Value)>),
 
     // The last value in the column data and the corresponding timestamp.
-    Last(Option<(i64, Value<'a>)>),
+    Last(Option<(i64, Value)>),
 }
 
 #[allow(unused_assignments)]
-impl<'a> AggregateResult<'a> {
-    pub fn update(&mut self, other: Value<'a>) {
+impl AggregateResult {
+    pub fn update(&mut self, other: Value) {
         if other.is_null() {
             // a NULL value has no effect on aggregates
             return;
@@ -2301,7 +2316,7 @@ impl<'a> AggregateResult<'a> {
                 }
                 (Value::ByteArray(_), Value::Null) => {} // do nothing
                 (Value::ByteArray(a), Value::String(b)) => {
-                    if a.cmp(&b.as_bytes()) == std::cmp::Ordering::Greater {
+                    if a.as_ref().cmp(&b.as_bytes()) == std::cmp::Ordering::Greater {
                         *v = other;
                     }
                 }
@@ -2336,7 +2351,7 @@ impl<'a> AggregateResult<'a> {
                 }
                 (Value::ByteArray(_), Value::Null) => {} // do nothing
                 (Value::ByteArray(a), Value::String(b)) => {
-                    if a.cmp(&b.as_bytes()) == std::cmp::Ordering::Less {
+                    if a.as_ref().cmp(&b.as_bytes()) == std::cmp::Ordering::Less {
                         *v = other;
                     }
                 }
@@ -2366,7 +2381,7 @@ impl<'a> AggregateResult<'a> {
     }
 }
 
-impl From<&AggregateType> for AggregateResult<'_> {
+impl From<&AggregateType> for AggregateResult {
     fn from(typ: &AggregateType) -> Self {
         match typ {
             AggregateType::Count => Self::Count(0),
@@ -2379,7 +2394,7 @@ impl From<&AggregateType> for AggregateResult<'_> {
     }
 }
 
-impl std::fmt::Display for AggregateResult<'_> {
+impl std::fmt::Display for AggregateResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AggregateResult::Count(v) => write!(f, "{}", v),
@@ -2537,55 +2552,56 @@ impl std::fmt::Display for Scalar {
     }
 }
 
-#[derive(Debug, PartialEq, PartialOrd, Clone)]
-pub enum OwnedValue {
-    // Represents a NULL value in a column row.
-    Null,
+pub type OwnedValue = Value;
+// #[derive(Debug, PartialEq, PartialOrd, Clone)]
+// pub enum OwnedValue {
+//     // Represents a NULL value in a column row.
+//     Null,
+//
+//     // A UTF-8 valid string.
+//     String(String),
+//
+//     // An arbitrary byte array.
+//     ByteArray(Vec<u8>),
+//
+//     // A boolean value.
+//     Boolean(bool),
+//
+//     // A numeric scalar value.
+//     Scalar(Scalar),
+// }
 
-    // A UTF-8 valid string.
-    String(String),
-
-    // An arbitrary byte array.
-    ByteArray(Vec<u8>),
-
-    // A boolean value.
-    Boolean(bool),
-
-    // A numeric scalar value.
-    Scalar(Scalar),
-}
-
-impl PartialEq<Value<'_>> for OwnedValue {
-    fn eq(&self, other: &Value<'_>) -> bool {
-        match (&self, other) {
-            (OwnedValue::String(a), Value::String(b)) => a == b,
-            (OwnedValue::Scalar(a), Value::Scalar(b)) => a == b,
-            _ => false,
-        }
-    }
-}
-
-impl PartialOrd<Value<'_>> for OwnedValue {
-    fn partial_cmp(&self, other: &Value<'_>) -> Option<std::cmp::Ordering> {
-        match (&self, other) {
-            (OwnedValue::String(a), Value::String(b)) => Some(a.as_str().cmp(b)),
-            (OwnedValue::Scalar(a), Value::Scalar(b)) => a.partial_cmp(b),
-            _ => None,
-        }
-    }
-}
+// impl PartialEq<Value> for OwnedValue {
+//     fn eq(&self, other: &Value) -> bool {
+//         match (&self, other) {
+//             (OwnedValue::String(a), Value::String(b)) => a == b,
+//             (OwnedValue::Scalar(a), Value::Scalar(b)) => a == b,
+//             _ => false,
+//         }
+//     }
+// }
+//
+// impl PartialOrd<Value> for OwnedValue {
+//     fn partial_cmp(&self, other: &Value) -> Option<std::cmp::Ordering> {
+//         match (&self, other) {
+//             (OwnedValue::String(a), Value::String(b)) => Some(a.as_str().cmp(b)),
+//             (OwnedValue::Scalar(a), Value::Scalar(b)) => a.partial_cmp(b),
+//             _ => None,
+//         }
+//     }
+// }
 
 /// Each variant is a possible value type that can be returned from a column.
-#[derive(Debug, PartialEq, PartialOrd, Copy, Clone)]
-pub enum Value<'a> {
+#[derive(Debug, PartialEq, PartialOrd, Clone)]
+pub enum Value {
     // Represents a NULL value in a column row.
     Null,
 
     // A UTF-8 valid string.
-    String(&'a str),
+    String(Rc<str>),
 
     // An arbitrary byte array.
-    ByteArray(&'a [u8]),
+    ByteArray(Rc<[u8]>),
 
     // A boolean value.
     Boolean(bool),
@@ -2594,7 +2610,7 @@ pub enum Value<'a> {
     Scalar(Scalar),
 }
 
-impl Value<'_> {
+impl Value {
     pub fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
@@ -2606,15 +2622,15 @@ impl Value<'_> {
         panic!("cannot unwrap Value to Scalar");
     }
 
-    pub fn string(&self) -> &str {
+    pub fn string(&self) -> Rc<str> {
         if let Self::String(s) = self {
-            return s;
+            return s.clone();
         }
         panic!("cannot unwrap Value to String");
     }
 }
 
-impl std::fmt::Display for Value<'_> {
+impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Null => write!(f, "NULL"),
@@ -2631,17 +2647,11 @@ impl std::fmt::Display for Value<'_> {
     }
 }
 
-impl<'a> From<&'a str> for Value<'a> {
-    fn from(v: &'a str) -> Self {
-        Self::String(v)
-    }
-}
-
 // Implementations of From trait for various concrete types.
 macro_rules! scalar_from_impls {
     ($(($variant:ident, $type:ident),)*) => {
         $(
-            impl From<$type> for Value<'_> {
+            impl From<$type> for Value {
                 fn from(v: $type) -> Self {
                     Self::Scalar(Scalar::$variant(v))
                 }
@@ -2658,9 +2668,9 @@ scalar_from_impls! {
 
 /// Each variant is a typed vector of materialised values for a column.
 #[derive(Debug, PartialEq)]
-pub enum Values<'a> {
+pub enum Values {
     // UTF-8 valid unicode strings
-    String(Vec<Option<&'a str>>),
+    String(Vec<Option<Rc<str>>>),
 
     // Scalar types
     I64(Vec<i64>),
@@ -2674,10 +2684,10 @@ pub enum Values<'a> {
     Bool(Vec<Option<bool>>),
 
     // Arbitrary byte arrays
-    ByteArray(Vec<Option<&'a [u8]>>),
+    ByteArray(Vec<Option<Rc<[u8]>>>),
 }
 
-impl<'a> Values<'a> {
+impl Values {
     pub fn len(&self) -> usize {
         match &self {
             Self::String(c) => c.len(),
@@ -2696,7 +2706,7 @@ impl<'a> Values<'a> {
         self.len() == 0
     }
 
-    pub fn value(&self, i: usize) -> Value<'a> {
+    pub fn value(&self, i: usize) -> Value {
         match &self {
             Self::String(c) => match c[i] {
                 Some(v) => Value::String(v),
@@ -2730,10 +2740,10 @@ impl<'a> Values<'a> {
 }
 
 /// Moves ownership of Values into an arrow `ArrayRef`.
-impl From<Values<'_>> for array::ArrayRef {
-    fn from(values: Values<'_>) -> Self {
+impl From<Values> for array::ArrayRef {
+    fn from(values: Values) -> Self {
         match values {
-            Values::String(values) => Arc::new(arrow::array::StringArray::from(values)),
+            Values::String(values) => Arc::new(arrow::array::StringArray::from(values.iter().map(|v| v.map(|vi| vi.as_ref())).collect::<Vec<_>>())),
             Values::I64(values) => Arc::new(arrow::array::Int64Array::from(values)),
             Values::U64(values) => Arc::new(arrow::array::UInt64Array::from(values)),
             Values::F64(values) => Arc::new(arrow::array::Float64Array::from(values)),
@@ -2741,23 +2751,23 @@ impl From<Values<'_>> for array::ArrayRef {
             Values::U64N(values) => Arc::new(arrow::array::UInt64Array::from(values)),
             Values::F64N(values) => Arc::new(arrow::array::Float64Array::from(values)),
             Values::Bool(values) => Arc::new(arrow::array::BooleanArray::from(values)),
-            Values::ByteArray(values) => Arc::new(arrow::array::BinaryArray::from(values)),
+            Values::ByteArray(values) => Arc::new(arrow::array::BinaryArray::from(values.iter().map(|v| v.map(|vi| vi.as_ref())).collect::<Vec<_>>())),
         }
     }
 }
 
 pub struct ValuesIterator<'a> {
-    v: &'a Values<'a>,
+    v: &'a Values,
     next_i: usize,
 }
 
 impl<'a> ValuesIterator<'a> {
-    pub fn new(v: &'a Values<'a>) -> Self {
+    pub fn new(v: &'a Values) -> Self {
         Self { v, next_i: 0 }
     }
 }
 impl<'a> Iterator for ValuesIterator<'a> {
-    type Item = Value<'a>;
+    type Item = Value;
 
     fn next(&mut self) -> Option<Self::Item> {
         let curr_i = self.next_i;
@@ -2772,12 +2782,12 @@ impl<'a> Iterator for ValuesIterator<'a> {
 }
 
 #[derive(PartialEq, Debug)]
-pub enum ValueSet<'a> {
+pub enum ValueSet {
     // UTF-8 valid unicode strings
-    String(BTreeSet<Option<&'a String>>),
+    String(BTreeSet<Option<Rc<str>>>),
 
     // Arbitrary collections of bytes
-    ByteArray(BTreeSet<Option<&'a [u8]>>),
+    ByteArray(BTreeSet<Option<Rc<[u8]>>>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -3027,7 +3037,7 @@ mod test {
         if let Column::String(meta, StringEncoding::RLEDictionary(enc)) = col {
             assert_eq!(
                 meta,
-                super::MetaData::<String> {
+                super::MetaData::<Rc<str>> {
                     size: 317,
                     rows: 4,
                     range: Some(("hello".to_string(), "world".to_string())),
@@ -3055,7 +3065,7 @@ mod test {
         if let Column::String(meta, StringEncoding::RLEDictionary(enc)) = col {
             assert_eq!(
                 meta,
-                super::MetaData::<String> {
+                super::MetaData::<Rc<str>> {
                     size: 301,
                     rows: 2,
                     range: Some(("hello".to_string(), "world".to_string())),

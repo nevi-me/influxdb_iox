@@ -10,6 +10,7 @@ use std::arch::x86_64::*;
 use std::collections::BTreeSet;
 use std::convert::From;
 use std::mem::size_of;
+use std::rc::Rc;
 
 use arrow_deps::arrow::array::{Array, StringArray};
 
@@ -20,7 +21,7 @@ pub struct Plain {
     // The sorted set of logical values that are contained within this column
     // encoding. Entries always contains None, which is used to reserve the
     // encoded id of `0` for NULL values.
-    entries: Vec<Option<String>>,
+    entries: Vec<Option<Rc<str>>>,
 
     // A vector of encoded ids used to represent logical values within the
     // column encoding.
@@ -53,10 +54,10 @@ impl Plain {
     ///
     /// Callers are not required to provide a logical NULL value as part of the
     /// dictionary. The encoding already reserves a representation for that.
-    pub fn with_dictionary(dictionary: BTreeSet<String>) -> Self {
-        let mut _self = Self::default();
-        _self.entries.extend(dictionary.into_iter().map(Some));
-        _self
+    pub fn with_dictionary(dictionary: BTreeSet<Rc<str>>) -> Self {
+        let mut new_self = Self::default();
+        new_self.entries.extend(dictionary.into_iter().map(Some));
+        new_self
     }
 
     /// A reasonable estimation of the on-heap size this encoding takes up.
@@ -89,7 +90,7 @@ impl Plain {
 
     /// Adds the provided string value to the encoded data. It is the caller's
     /// responsibility to ensure that the dictionary encoded remains sorted.
-    pub fn push(&mut self, v: String) {
+    pub fn push(&mut self, v: Rc<str>) {
         self.push_additional(Some(v), 1);
     }
 
@@ -102,14 +103,14 @@ impl Plain {
     /// Adds additional repetitions of the provided value to the encoded data.
     /// It is the caller's responsibility to ensure that the dictionary remains
     /// sorted. `push_additional` will panic if that invariant is broken.
-    pub fn push_additional(&mut self, v: Option<String>, additional: u32) {
+    pub fn push_additional(&mut self, v: Option<Rc<str>>, additional: u32) {
         if v.is_none() {
             self.contains_null = true;
             self.push_encoded_values(NULL_ID, additional);
             return;
         }
 
-        match self.encoded_id(v.as_deref()) {
+        match self.encoded_id(v) {
             Ok(id) => self.push_encoded_values(id, additional),
             Err(idx) => {
                 // check this value can be inserted into the dictionary whilst
@@ -141,10 +142,10 @@ impl Plain {
     //
     // The `Err` variant can be useful when applying predicates directly to the
     // encoded data.
-    fn encoded_id(&self, value: Option<&str>) -> Result<u32, u32> {
+    fn encoded_id(&self, value: Option<Rc<str>>) -> Result<u32, u32> {
         match self
             .entries
-            .binary_search_by(|entry| entry.as_deref().cmp(&value))
+            .binary_search_by(|entry| entry.cmp(&value))
         {
             Ok(id) => Ok(id as u32),
             Err(id) => Err(id as u32),
@@ -169,7 +170,7 @@ impl Plain {
 
     /// Populates the provided destination container with the row ids satisfying
     /// the provided predicate.
-    pub fn row_ids_filter(&self, value: &str, op: &cmp::Operator, dst: RowIDs) -> RowIDs {
+    pub fn row_ids_filter(&self, value: Rc<str>, op: &cmp::Operator, dst: RowIDs) -> RowIDs {
         match op {
             cmp::Operator::Equal | cmp::Operator::NotEqual => self.row_ids_equal(value, op, dst),
             cmp::Operator::LT | cmp::Operator::LTE | cmp::Operator::GT | cmp::Operator::GTE => {
@@ -179,7 +180,7 @@ impl Plain {
     }
 
     // Finds row ids based on = or != operator.
-    fn row_ids_equal(&self, value: &str, op: &cmp::Operator, mut dst: RowIDs) -> RowIDs {
+    fn row_ids_equal(&self, value: Rc<str>, op: &cmp::Operator, mut dst: RowIDs) -> RowIDs {
         dst.clear();
 
         if let Ok(encoded_id) = self.encoded_id(Some(value)) {
@@ -301,7 +302,7 @@ impl Plain {
     }
 
     // Finds row ids based on <, <=, > or >= operator.
-    fn row_ids_cmp(&self, value: &str, op: &cmp::Operator, mut dst: RowIDs) -> RowIDs {
+    fn row_ids_cmp(&self, value: Rc<str>, op: &cmp::Operator, mut dst: RowIDs) -> RowIDs {
         match self.encoded_id(Some(value)) {
             // Happy path - the logical value on the predicate exists in the column
             // apply the predicate to each value in the column and identify all the
@@ -489,7 +490,7 @@ impl Plain {
     // TODO(edd): rethink returning `Vec<String>` by looking at if we can store
     // entries in a `Vec<String>` rather than a `Vec<Option<String>>`. It would
     // then allow us to return a `&[String]` here.
-    pub fn dictionary(&self) -> Vec<&String> {
+    pub fn dictionary(&self) -> Vec<Rc<str>> {
         if self.entries.len() == 1 {
             // no non-null entries.
             return vec![];
@@ -498,13 +499,13 @@ impl Plain {
         self.entries
             .iter()
             .skip(1)
-            .filter_map(|v| v.as_ref())
+            .filter_map(|v| v.clone())
             .collect()
     }
 
     /// Returns the logical value present at the provided row id. Panics if the
     /// encoding doesn't have a logical row at the id.
-    pub fn value(&self, row_id: u32) -> Option<&String> {
+    pub fn value(&self, row_id: u32) -> Option<Rc<str>> {
         assert!(
             row_id < self.num_rows(),
             "row_id {:?} out of bounds for {:?} rows",
@@ -513,14 +514,14 @@ impl Plain {
         );
 
         let encoded_id = self.encoded_data[row_id as usize];
-        self.entries[encoded_id as usize].as_ref()
+        self.entries[encoded_id as usize]
     }
 
     /// Materialises the decoded value belonging to the provided encoded id.
     ///
     /// Panics if there is no decoded value for the provided id
-    pub fn decode_id(&self, encoded_id: u32) -> Option<&str> {
-        self.entries[encoded_id as usize].as_deref()
+    pub fn decode_id(&self, encoded_id: u32) -> Option<Rc<str>> {
+        self.entries[encoded_id as usize]
     }
 
     /// Materialises a vector of references to the decoded values in the
@@ -528,25 +529,25 @@ impl Plain {
     ///
     /// NULL values are represented by None. It is the caller's responsibility
     /// to ensure row ids are a monotonically increasing set.
-    pub fn values<'a>(
-        &'a self,
+    pub fn values(
+        &self,
         row_ids: &[u32],
-        mut dst: Vec<Option<&'a str>>,
-    ) -> Vec<Option<&'a str>> {
+        mut dst: Vec<Option<Rc<str>>>,
+    ) -> Vec<Option<Rc<str>>> {
         dst.clear();
         dst.reserve(row_ids.len());
 
         // The `as_deref` is needed to convert an `&Option<String>` into an
         // `Option<&str>`.
         for chunks in row_ids.chunks_exact(4) {
-            dst.push(self.entries[self.encoded_data[chunks[0] as usize] as usize].as_deref());
-            dst.push(self.entries[self.encoded_data[chunks[1] as usize] as usize].as_deref());
-            dst.push(self.entries[self.encoded_data[chunks[2] as usize] as usize].as_deref());
-            dst.push(self.entries[self.encoded_data[chunks[3] as usize] as usize].as_deref());
+            dst.push(self.entries[self.encoded_data[chunks[0] as usize] as usize]);
+            dst.push(self.entries[self.encoded_data[chunks[1] as usize] as usize]);
+            dst.push(self.entries[self.encoded_data[chunks[2] as usize] as usize]);
+            dst.push(self.entries[self.encoded_data[chunks[3] as usize] as usize]);
         }
 
         for &v in &row_ids[dst.len()..row_ids.len()] {
-            dst.push(self.entries[self.encoded_data[v as usize] as usize].as_deref());
+            dst.push(self.entries[self.encoded_data[v as usize] as usize]);
         }
 
         dst
@@ -555,14 +556,14 @@ impl Plain {
     /// Returns the lexicographical minimum value for the provided set of row
     /// ids. NULL values are not considered the minimum value if any non-null
     /// value exists at any of the provided row ids.
-    pub fn min<'a>(&'a self, row_ids: &[u32]) -> Option<&'a String> {
+    pub fn min(&self, row_ids: &[u32]) -> Option<Rc<str>> {
         todo!()
     }
 
     /// Returns the lexicographical maximum value for the provided set of row
     /// ids. NULL values are not considered the maximum value if any non-null
     /// value exists at any of the provided row ids.
-    pub fn max<'a>(&'a self, row_ids: &[u32]) -> Option<&'a String> {
+    pub fn max(&self, row_ids: &[u32]) -> Option<Rc<str>> {
         todo!()
     }
 
@@ -576,19 +577,19 @@ impl Plain {
     /// the column.
     ///
     /// NULL values are represented by None.
-    pub fn all_values<'a>(&'a self, mut dst: Vec<Option<&'a str>>) -> Vec<Option<&'a str>> {
+    pub fn all_values(&self, mut dst: Vec<Option<Rc<str>>>) -> Vec<Option<Rc<str>>> {
         dst.clear();
         dst.reserve(self.entries.len());
 
         for chunks in self.encoded_data.chunks_exact(4) {
-            dst.push(self.entries[chunks[0] as usize].as_deref());
-            dst.push(self.entries[chunks[1] as usize].as_deref());
-            dst.push(self.entries[chunks[2] as usize].as_deref());
-            dst.push(self.entries[chunks[3] as usize].as_deref());
+            dst.push(self.entries[chunks[0] as usize]);
+            dst.push(self.entries[chunks[1] as usize]);
+            dst.push(self.entries[chunks[2] as usize]);
+            dst.push(self.entries[chunks[3] as usize]);
         }
 
         for &v in &self.encoded_data[dst.len()..self.encoded_data.len()] {
-            dst.push(self.entries[v as usize].as_deref());
+            dst.push(self.entries[v as usize]);
         }
         dst
     }
@@ -598,11 +599,11 @@ impl Plain {
     ///
     /// It is the caller's responsibility to ensure row ids are a monotonically
     /// increasing set.
-    pub fn distinct_values<'a>(
-        &'a self,
+    pub fn distinct_values(
+        &self,
         row_ids: &[u32],
-        mut dst: BTreeSet<Option<&'a String>>,
-    ) -> BTreeSet<Option<&'a String>> {
+        mut dst: BTreeSet<Option<Rc<str>>>,
+    ) -> BTreeSet<Option<Rc<str>>> {
         // TODO(edd): Perf... We can improve on this if we know the column is
         // totally ordered.
         dst.clear();
@@ -684,7 +685,7 @@ impl<'a> From<Vec<&str>> for Plain {
     fn from(vec: Vec<&str>) -> Self {
         let mut enc = Self::default();
         for v in vec {
-            enc.push(v.to_string());
+            enc.push(v.into());
         }
         enc
     }
@@ -694,7 +695,7 @@ impl<'a> From<Vec<String>> for Plain {
     fn from(vec: Vec<String>) -> Self {
         let mut enc = Self::default();
         for v in vec {
-            enc.push(v);
+            enc.push(v.into());
         }
         enc
     }
@@ -705,7 +706,7 @@ impl<'a> From<Vec<Option<&str>>> for Plain {
         let mut drle = Self::default();
         for v in vec {
             match v {
-                Some(x) => drle.push(x.to_string()),
+                Some(x) => drle.push(x.into()),
                 None => drle.push_none(),
             }
         }
@@ -718,7 +719,7 @@ impl<'a> From<Vec<Option<String>>> for Plain {
         let mut drle = Self::default();
         for v in vec {
             match v {
-                Some(x) => drle.push(x),
+                Some(x) => drle.push(x.into()),
                 None => drle.push_none(),
             }
         }
@@ -733,7 +734,7 @@ impl<'a> From<StringArray> for Plain {
             if arr.is_null(i) {
                 drle.push_none();
             } else {
-                drle.push(arr.value(i).to_string());
+                drle.push(arr.value(i).into());
             }
         }
         drle
