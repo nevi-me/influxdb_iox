@@ -3,8 +3,7 @@
 #
 # All pushes and PRs (including from forks) run:
 #
-#   - cargo build with the default cargo profile ("dev")
-#   - cargo test
+#   - cargo test with the default cargo profile ("dev") (also builds all)
 #   - cargo fmt
 #   - clippy (with warnings denied)
 #
@@ -20,31 +19,6 @@ on: [pull_request]
 name: ci
 
 jobs:
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    container:
-      image: quay.io/influxdb/rust:ci
-      # Run as the "root" user in the build container to fix workspace & cache
-      # permission errors.
-      options: --user root
-    steps:
-      # Checkout the code
-      - uses: actions/checkout@v2
-
-      # Enable caching of build artefacts
-      - uses: actions/cache@v2
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      # Build!
-      - name: Run dev build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --workspace
 
   test:
     name: Test
