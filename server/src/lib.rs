@@ -685,7 +685,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        if !matches!(got, Error::DatabaseAlreadyExists {..}) {
+        if !matches!(got, Error::DatabaseAlreadyExists { .. }) {
             panic!("expected already exists error");
         }
 
