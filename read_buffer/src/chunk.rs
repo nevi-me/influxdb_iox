@@ -11,6 +11,7 @@ use crate::row_group::{ColumnName, Predicate};
 use crate::schema::AggregateType;
 use crate::table;
 use crate::table::Table;
+use crate::InfluxColumnNameType;
 
 type TableName = String;
 
@@ -273,6 +274,7 @@ impl Chunk {
         &self,
         table_name: &str,
         predicate: &Predicate,
+        column_types: InfluxColumnNameType,
         dst: BTreeSet<String>,
     ) -> BTreeSet<String> {
         let chunk_data = self.chunk_data.read().unwrap();
@@ -280,7 +282,7 @@ impl Chunk {
         // TODO(edd): same potential contention as `table_names` but I'm ok
         // with this for now.
         match chunk_data.data.get(table_name) {
-            Some(table) => table.column_names(predicate, dst),
+            Some(table) => table.column_names(predicate, column_types, dst),
             None => dst,
         }
     }

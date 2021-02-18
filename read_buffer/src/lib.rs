@@ -460,14 +460,52 @@ impl Database {
         Ok(names)
     }
 
-    /// Returns the distinct set of column names (tag keys) that satisfy the
-    /// provided predicate.
+    /// Returns the distinct set of field keys that satisfy the provided
+    /// predicate.
+    pub fn tag_keys(
+        &self,
+        partition_key: &str,
+        table_name: &str,
+        chunk_ids: &[u32],
+        predicate: Predicate,
+    ) -> Result<Option<BTreeSet<String>>> {
+        self.column_names(
+            partition_key,
+            table_name,
+            chunk_ids,
+            predicate,
+            InfluxColumnNameType::TagKeys,
+        )
+    }
+
+    /// Returns the distinct set of tag keys that satisfy the provided
+    /// predicate.
+    pub fn field_keys(
+        &self,
+        partition_key: &str,
+        table_name: &str,
+        chunk_ids: &[u32],
+        predicate: Predicate,
+    ) -> Result<Option<BTreeSet<String>>> {
+        self.column_names(
+            partition_key,
+            table_name,
+            chunk_ids,
+            predicate,
+            InfluxColumnNameType::FieldKeys,
+        )
+    }
+
+    /// Returns the distinct set of column names that satisfy the provided
+    /// predicate. For the InfluxDB data-model, columns can be limited to either
+    /// tags or fields. There are also convenience methods for those cases.
     pub fn column_names(
         &self,
         partition_key: &str,
         table_name: &str,
         chunk_ids: &[u32],
         predicate: Predicate,
+        column_types: InfluxColumnNameType,
     ) -> Result<Option<BTreeSet<String>>> {
         let partition_data = self.data.read().unwrap();
 
@@ -493,7 +531,7 @@ impl Database {
             // the dst buffer is pushed into each chunk's `column_names`
             // implementation ensuring that we short-circuit any tables where
             // we have already determined column names.
-            chunk.column_names(table_name, &predicate, dst)
+            chunk.column_names(table_name, &predicate, column_types, dst)
         });
 
         Ok(Some(names))
@@ -634,6 +672,15 @@ impl Partition {
                 .map(|chunk| std::mem::size_of::<u32>() as u64 + chunk.size())
                 .sum::<u64>()
     }
+}
+
+/// An enum for limiting the results of `column_names` to either tags keys,
+/// field keys or all column types.
+#[derive(Clone, Copy)]
+pub enum InfluxColumnNameType {
+    TagKeys,
+    FieldKeys,
+    All,
 }
 
 /// ReadFilterResults implements ...
@@ -1092,7 +1139,13 @@ mod test {
 
         // Just query against the first chunk.
         let result = db
-            .column_names("hour_1", "Utopia", &[22], Predicate::default())
+            .column_names(
+                "hour_1",
+                "Utopia",
+                &[22],
+                Predicate::default(),
+                InfluxColumnNameType::All,
+            )
             .unwrap();
 
         assert_eq!(
@@ -1100,14 +1153,26 @@ mod test {
             Some(to_set(&["counter", "region", "sketchy_sensor", "time"]))
         );
         let result = db
-            .column_names("hour_1", "Utopia", &[40], Predicate::default())
+            .column_names(
+                "hour_1",
+                "Utopia",
+                &[40],
+                Predicate::default(),
+                InfluxColumnNameType::All,
+            )
             .unwrap();
 
         assert_eq!(result, Some(to_set(&["active", "time"])));
 
         // And now the union across all chunks.
         let result = db
-            .column_names("hour_1", "Utopia", &[22, 40], Predicate::default())
+            .column_names(
+                "hour_1",
+                "Utopia",
+                &[22, 40],
+                Predicate::default(),
+                InfluxColumnNameType::All,
+            )
             .unwrap();
 
         assert_eq!(
@@ -1128,6 +1193,7 @@ mod test {
                 "Utopia",
                 &[22, 40],
                 Predicate::new(vec![BinaryExpr::from(("time", "=", 30_i64))]),
+                InfluxColumnNameType::All,
             )
             .unwrap();
 
@@ -1141,6 +1207,7 @@ mod test {
                 "Utopia",
                 &[22, 40],
                 Predicate::new(vec![BinaryExpr::from(("active", "=", true))]),
+                InfluxColumnNameType::All,
             )
             .unwrap();
 
