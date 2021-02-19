@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use influxdb_line_protocol::ParsedLine;
 
 use chrono::{DateTime, TimeZone, Utc};

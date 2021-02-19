@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hyper::Server;
+use query::DatabaseStore;
 use snafu::{ResultExt, Snafu};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use object_store::{self, gcp::GoogleCloudStorage, ObjectStore};
 use panic_logging::SendPanicsToTracing;
@@ -67,6 +68,9 @@ pub enum Error {
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+// TODO - put this in some sort of server config.
+const BACKGROUND_TASK_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// This is the entry point for the IOx server. `config` represents
 /// command line arguments, if any
@@ -148,6 +152,12 @@ pub async fn main(logging_level: LoggingLevel, config: Option<Config>) -> Result
     let git_hash = option_env!("GIT_HASH").unwrap_or("UNKNOWN");
     info!(git_hash, "InfluxDB IOx server ready");
 
+    // Here is as good as place as any to add some logic for a background
+    // control loop.
+    tokio::task::spawn(async move {
+        run_server_background_event_loop(Arc::clone(&app_server), BACKGROUND_TASK_CHECK_EVERY).await
+    });
+
     // Wait for both the servers to complete
     let (grpc_server, server) = futures::future::join(grpc_server, http_server).await;
 
@@ -155,4 +165,44 @@ pub async fn main(logging_level: LoggingLevel, config: Option<Config>) -> Result
     server.context(ServingHttp)?;
 
     Ok(())
+}
+
+// A place to run events on an interval. Eventually we will want to coordinate
+// these, we may want to throttle them or prioritise them. We may want them
+// running at different cadences etc etc.
+//
+// TODO:
+//    * no way to shut this down!
+//    * the work that gets done is CPU-bound, it can take longer than the event
+//      loop so it should probably be spawned onto a dedicated thread pool.
+//    * that thread-pool needs to manage the maximum amount of work that gets
+//      done. `spawn_blocking` probably isn't what we want.
+async fn run_server_background_event_loop(
+    server: Arc<AppServer<ConnectionManager>>,
+    interval: std::time::Duration,
+) {
+    loop {
+        debug!("Server background loop checking");
+        let now = std::time::Instant::now();
+
+        let database_names = server.db_names_sorted().await;
+        for name in database_names {
+            let db = match server.db_or_create(&name).await {
+                Ok(db) => db,
+                Err(e) => {
+                    // TODO - some errors should probably be ignored, e.g., if
+                    // the database doesn't exist due to a race between this and
+                    // above?
+                    warn!(error= ?e, error_message = ?e.to_string(), db_name = ?name, "Database not found");
+                    continue;
+                }
+            };
+
+            if let Err(e) = db.apply_mutable_buffer_migration() {
+                error!(error= ?e, error_message = ?e.to_string(), db_name = ?name, "Error migrating chunk in database");
+            }
+        }
+        debug!("Server background finished checking in {:?}", now.elapsed());
+        tokio::time::sleep(interval).await
+    }
 }
