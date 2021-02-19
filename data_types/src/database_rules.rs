@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use influxdb_line_protocol::ParsedLine;
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -132,6 +134,7 @@ pub struct MutableBufferConfig {
     /// to drop partitions (because of later rules in this config) it will
     /// reject writes until it is able to drop partitions.
     pub buffer_size: u64,
+
     /// If set, the mutable buffer will not drop partitions that have chunks
     /// that have not yet been persisted. Thus it will reject writes if it
     /// is over size and is unable to drop partitions. The default is to
@@ -139,14 +142,20 @@ pub struct MutableBufferConfig {
     /// unpersisted chunks or not. The WAL Buffer can be used to ensure
     /// persistence, but this may cause longer recovery times.
     pub reject_if_not_persisted: bool,
+
     /// Drop partitions to free up space in this order. Can be by the oldest
     /// created at time, the longest since the last write, or the min or max of
     /// some column.
     pub partition_drop_order: PartitionSortRules,
+
     /// Attempt to persist partitions after they haven't received a write for
     /// this number of seconds. If not set, partitions won't be
     /// automatically persisted.
     pub persist_after_cold_seconds: Option<u32>,
+
+    /// The conditions under which chunks may be migrated from the mutable
+    /// buffer and into the read buffer.
+    pub chunk_migration_policy: ChunkMigrationPolicy,
 }
 
 const DEFAULT_MUTABLE_BUFFER_SIZE: u64 = 2_147_483_648; // 2 GB
@@ -171,6 +180,9 @@ impl Default for MutableBufferConfig {
             // rollover the chunk and persist it after the partition has been cold for
             // 15 minutes
             persist_after_cold_seconds: Some(DEFAULT_PERSIST_AFTER_COLD_SECONDS),
+            // migrate a chunk from the mutable buffer to the read buffer when
+            // it is this large.
+            chunk_migration_policy: ChunkMigrationPolicy::BySize(536_870_912), // 512 MB
         }
     }
 }
@@ -416,6 +428,22 @@ pub struct HostGroup {
     pub id: HostGroupId,
     /// `hosts` is a vector of connection strings for remote hosts.
     pub hosts: Vec<String>,
+}
+
+/// Describes under what conditions chunks are migrated from the mutable buffer
+/// to the read buffer.
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Clone)]
+pub enum ChunkMigrationPolicy {
+    // The `BySize` policy will migrate a chunk to the read buffer when it is
+    // a certain size in bytes.
+    BySize(u32),
+    /* Possible policies?
+     * ByAge
+     * BySizeOrAge
+     * BySomeMeasureOfReadActivity... */
+    //
+    // Don't migrate chunks out of the mutable buffer.
+    None,
 }
 
 #[cfg(test)]
