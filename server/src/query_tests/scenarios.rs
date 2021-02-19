@@ -51,9 +51,7 @@ impl DBSetup for NoData {
         // move data out of open chunk
         assert_eq!(db.rollover_partition(partition_key).await.unwrap().id(), 0);
         // drop it
-        db.drop_mutable_buffer_chunk(partition_key, 0)
-            .await
-            .unwrap();
+        db.drop_mutable_buffer_chunk(partition_key, 0).unwrap();
 
         assert_eq!(db.mutable_buffer_chunks(partition_key).len(), 1);
 
@@ -230,9 +228,7 @@ async fn make_one_chunk_scenarios(partition_key: &str, data: &str) -> Vec<DBScen
     db.load_chunk_to_read_buffer(partition_key, 0)
         .await
         .unwrap();
-    db.drop_mutable_buffer_chunk(partition_key, 0)
-        .await
-        .unwrap();
+    db.drop_mutable_buffer_chunk(partition_key, 0).unwrap();
     let scenario4 = DBScenario {
         scenario_name: "Data in only read buffer and not mutable buffer".into(),
         db,
@@ -310,9 +306,7 @@ async fn make_two_chunk_scenarios(
     db.load_chunk_to_read_buffer(partition_key, 0)
         .await
         .unwrap();
-    db.drop_mutable_buffer_chunk(partition_key, 0)
-        .await
-        .unwrap();
+    db.drop_mutable_buffer_chunk(partition_key, 0).unwrap();
     writer.write_lp_string(&db, data2).await.unwrap();
     let scenario3 = DBScenario {
         scenario_name: "Data in open chunk of mutable buffer, and one chunk of read buffer".into(),
@@ -330,16 +324,12 @@ async fn make_two_chunk_scenarios(
     db.load_chunk_to_read_buffer(partition_key, 0)
         .await
         .unwrap();
-    db.drop_mutable_buffer_chunk(partition_key, 0)
-        .await
-        .unwrap();
+    db.drop_mutable_buffer_chunk(partition_key, 0).unwrap();
 
     db.load_chunk_to_read_buffer(partition_key, 1)
         .await
         .unwrap();
-    db.drop_mutable_buffer_chunk(partition_key, 1)
-        .await
-        .unwrap();
+    db.drop_mutable_buffer_chunk(partition_key, 1).unwrap();
     let scenario4 = DBScenario {
         scenario_name: "Data in two read buffer chunks".into(),
         db,

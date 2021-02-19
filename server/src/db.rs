@@ -7,15 +7,21 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
+    time::Duration,
 };
 
 use async_trait::async_trait;
-use data_types::{data::ReplicatedWrite, database_rules::DatabaseRules, selection::Selection};
-use mutable_buffer::MutableBufferDb;
+use data_types::{
+    data::ReplicatedWrite,
+    database_rules::{ChunkMigrationPolicy, DatabaseRules},
+    selection::Selection,
+};
+use mutable_buffer::{chunk::Chunk, MutableBufferDb};
 use query::{plan::stringset::StringSetPlan, Database, PartitionChunk};
 use read_buffer::Database as ReadBufferDb;
 use serde::{Deserialize, Serialize};
 use snafu::{OptionExt, ResultExt, Snafu};
+use tracing::{debug, error};
 
 use crate::buffer::Buffer;
 
@@ -150,7 +156,7 @@ impl Db {
 
     /// Drops the specified chunk from the mutable buffer, returning
     /// the dropped chunk.
-    pub async fn drop_mutable_buffer_chunk(
+    pub fn drop_mutable_buffer_chunk(
         &self,
         partition_key: &str,
         chunk_id: u32,
@@ -225,6 +231,113 @@ impl Db {
             partition_key,
             mb_chunk.id,
         ))
+    }
+
+    /// Determine which (if any) chunks need to be migrated to the read buffer
+    /// based on the `ChunkMigrationPolicy` on the mutable buffer.
+    pub fn apply_mutable_buffer_migration(&self) -> Result<()> {
+        let mutable_buffer = self
+            .mutable_buffer
+            .as_ref()
+            .context(DatatbaseNotWriteable)?;
+
+        let mut all_chunks = BTreeMap::new();
+
+        match &self.rules.mutable_buffer_config {
+            Some(config) => match config.chunk_migration_policy {
+                ChunkMigrationPolicy::BySize(size) => {
+                    // TODO - it seems impossible for `partition_keys` to
+                    // return an error.
+                    let keys = self.partition_keys()?;
+
+                    for partition_key in keys {
+                        // All chunks in the mutable buffer for this partition key
+                        // that are at least as big as `size` bytes.
+                        let chunks = mutable_buffer
+                            .chunks(&partition_key)
+                            .iter()
+                            .filter_map(|chunk| {
+                                // is the chunk closed and is it big enough?
+                                if chunk.time_closed.is_some() && chunk.size() >= size as usize {
+                                    return Some(Arc::clone(chunk));
+                                }
+                                None
+                            })
+                            .collect::<Vec<_>>();
+
+                        all_chunks.insert(partition_key, chunks);
+                    }
+                }
+
+                ChunkMigrationPolicy::None => {} // nothing to do
+            },
+            None => {} // nothing to do because not mutable buffer
+        }
+
+        for (partition_key, chunks) in all_chunks {
+            for chunk in chunks {
+                let chunk = chunk.as_ref();
+                match self.migrate_mutable_buffer_chunk(&partition_key, chunk) {
+                    Ok(d) => {
+                        debug!(partition_key = ?partition_key, chunk_id = ?chunk.id(), chunk_size = ?chunk.size(), time = ?d, "Chunk migrated")
+                    }
+                    Err(e) => {
+                        // It seems problematic to affect the migration of other
+                        // partitions, so let's log the error and try other
+                        // chunks/partitions.
+                        error!(error= ?e, error_message = ?e.to_string(), partition_key = ?partition_key, chunk_id = ?chunk.id(), "Unable to drop mutable buffer chunk");
+                        continue;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // Migrates the specified `Chunk` specified by the key/ID from the mutable
+    // buffer to the read buffer.
+    //
+    // The total time take to execute this operation is returned on success.
+    fn migrate_mutable_buffer_chunk(
+        &self,
+        partition_key: &str,
+        chunk: &Chunk,
+    ) -> Result<Duration, Error> {
+        let now = std::time::Instant::now();
+
+        // N.B, unwrapping here because I looked at table_stats and I don't
+        // see how an error could occur that was recoverable.
+        for stats in chunk.table_stats().unwrap() {
+            let mut batches = vec![];
+            chunk
+                .table_to_arrow(&mut batches, &stats.name, Selection::All)
+                .unwrap();
+
+            // TODO(edd): here we could create a collection of jobs to process
+            // (effectively a vec of `Fn`) which we could bubble back up to
+            // the executor for execution across as many threads as it sees
+            // fit.
+            for batch in batches.drain(..) {
+                // This call is entirely CPU-bound and is expensive because it
+                // can involve transforming significant amounts of data.
+                //
+                // It does not block operations on the read buffer.
+                self.read_buffer
+                    .upsert_partition(partition_key, chunk.id(), &stats.name, batch)
+            }
+        }
+
+        // TODO - I don't think the current semantics will work with the current
+        // situation here. As I understand it, when the MB and RB have the same
+        // chunks, the RB is preferred but we need the database to *only prefer*
+        // the RB when the chunk has been fully loaded above, otherwise it's
+        // racy. To achieve that we need to control here which chunks are in the
+        // MB or RB, or at least which are "ready" in the RB...
+
+        // Finally, remove the chunk from the mutable buffer.
+        self.drop_mutable_buffer_chunk(partition_key, chunk.id())?;
+
+        Ok(now.elapsed())
     }
 
     /// Returns the next write sequence number
@@ -451,7 +564,6 @@ mod tests {
 
         // now, drop the mutable buffer chunk and results should still be the same
         db.drop_mutable_buffer_chunk(partition_key, mb_chunk.id())
-            .await
             .unwrap();
 
         assert_eq!(mutable_chunk_ids(&db, partition_key), vec![1]);
