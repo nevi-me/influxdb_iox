@@ -609,6 +609,7 @@ impl query::PartitionChunk for Chunk {
         &self,
         _table_name: &str,
         _predicate: &Predicate,
+        _columns: Selection<'_>,
     ) -> Result<Option<StringSet>, Self::Error> {
         unimplemented!("This function is slated for removal")
     }

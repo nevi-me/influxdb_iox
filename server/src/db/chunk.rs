@@ -316,6 +316,7 @@ impl PartitionChunk for DBChunk {
         &self,
         table_name: &str,
         predicate: &Predicate,
+        columns: Selection<'_>,
     ) -> Result<Option<StringSet>, Self::Error> {
         match self {
             Self::MutableBuffer { chunk } => {
@@ -344,7 +345,7 @@ impl PartitionChunk for DBChunk {
                         table_name,
                         chunk_ids,
                         rb_predicate,
-                        Selection::All,
+                        columns,
                     )
                     .context(ReadBufferChunk { chunk_id })?;
 

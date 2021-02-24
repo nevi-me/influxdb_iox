@@ -496,6 +496,42 @@ impl TestChunk {
             .push(Arc::new(batch));
         self
     }
+
+    /// Returns a column selection for just the specified columns
+    pub fn all_column_names(
+        &self,
+        table_name: &str,
+    ) -> Option<StringSet> {
+
+        let column_names = self.table_schemas.get(table_name).map(|schema| {
+            schema
+                .iter()
+                .map(|(_, field)| field.name().to_string())   
+                .collect::<StringSet>()
+        });
+    
+        column_names
+    }
+
+    pub fn specific_column_names_selection(
+        &self,
+        table_name: &str,
+        column_names: &[&str],
+    ) -> Option<StringSet> {
+
+        let column_names = self.table_schemas.get(table_name).map(|schema| {
+            schema
+                .iter()
+                .filter(|(_, field)| {
+                    let col = field.name().as_str();
+                    column_names.contains(&col)
+                })
+                .map(|(_, field)| field.name().to_string())
+                .collect::<StringSet>()
+        });
+
+        column_names
+    }
 }
 
 #[async_trait]
@@ -574,18 +610,27 @@ impl PartitionChunk for TestChunk {
         &self,
         table_name: &str,
         predicate: &Predicate,
+        selection: Selection<'_>,
     ) -> Result<Option<StringSet>, Self::Error> {
         self.check_error()?;
 
         // save the predicate
         self.predicate.lock().replace(predicate.clone());
 
+            /*
         let column_names = self.table_schemas.get(table_name).map(|schema| {
             schema
                 .iter()
-                .map(|(_, field)| field.name().to_string())
+                .map(|(_, field)| field.name().to_string())   
                 .collect::<StringSet>()
         });
+        */
+
+        // Nga Todo: only return columns specified in selection
+        let column_names = match selection {
+            Selection::All => self.all_column_names(table_name), //all_columns_selection(chunk),
+            Selection::Some(cols) => self.specific_column_names_selection(table_name, cols)  //specific_columns_selection(chunk, cols),
+        };
 
         Ok(column_names)
     }
