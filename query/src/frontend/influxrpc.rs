@@ -199,7 +199,6 @@ impl InfluxRPCPlanner {
                     "finding columns in table"
                 );
 
-                // nga
                 // get only tag columns
                 let schema = chunk
                     .table_schema(&table_name, Selection::All)
