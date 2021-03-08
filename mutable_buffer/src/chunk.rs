@@ -629,6 +629,21 @@ impl Chunk {
         Ok(())
     }
 
+    pub fn table_to_arrow_one_batch(
+        &self,
+        dst: &mut RecordBatch,
+        table_name: &str,
+        selection: Selection<'_>,
+    ) -> Result<()> {
+        if let Some(table) = self.table(table_name)? {
+            let dst = &table
+                    .to_arrow(&self, selection)
+                    .context(NamedTableError { table_name })?;
+        }
+        Ok(())
+    }
+
+
     /// Returns a vec of the summary statistics of the tables in this chunk
     pub fn table_stats(&self) -> Result<Vec<TableSummary>> {
         let mut stats = Vec::with_capacity(self.tables.len());

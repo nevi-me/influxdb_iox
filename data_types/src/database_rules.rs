@@ -25,6 +25,8 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+const DEFAULT_CHUNK_MOVER_CHECK_DURATION: std::time::Duration = std::time::Duration::from_secs(10); // 10 seconds
+
 /// DatabaseRules contains the rules for replicating data, sending data to
 /// subscribers, and querying data for a single database.
 #[derive(Debug, Serialize, Deserialize, Default, Eq, PartialEq, Clone)]
@@ -113,6 +115,10 @@ pub struct DatabaseRules {
     /// in object storage.
     #[serde(default = "MutableBufferConfig::default_option")]
     pub mutable_buffer_config: Option<MutableBufferConfig>,
+
+    /// Duration for chunk movers to wake up and do move & drop chunks
+    #[serde(default)]
+    pub chunk_mover_duration: std::time::Duration,
 }
 
 impl DatabaseRules {
@@ -127,6 +133,7 @@ impl DatabaseRules {
     pub fn new() -> Self {
         Self {
             mutable_buffer_config: MutableBufferConfig::default_option(),
+            chunk_mover_duration: DEFAULT_CHUNK_MOVER_CHECK_DURATION,
             ..Default::default()
         }
     }
@@ -206,6 +213,9 @@ impl TryFrom<management::DatabaseRules> for DatabaseRules {
         let query = proto.query_config.unwrap_or_default();
         let replication = proto.replication_config.unwrap_or_default();
 
+        // TODO: need to have chunk_mover_duration in the proto
+        let chunk_mover_duration = DEFAULT_CHUNK_MOVER_CHECK_DURATION; //proto.chunk_mover_duration;
+
         Ok(Self {
             name: proto.name,
             partition_template,
@@ -219,6 +229,7 @@ impl TryFrom<management::DatabaseRules> for DatabaseRules {
             read_only_partitions: query.read_only_partitions,
             wal_buffer_config,
             mutable_buffer_config,
+            chunk_mover_duration,
         })
     }
 }

@@ -3,6 +3,7 @@ use crate::commands::{
     server::{load_config, Config, ObjectStore as ObjStoreOpt},
 };
 use hyper::Server;
+use query::DatabaseStore;
 use object_store::{
     self, aws::AmazonS3, azure::MicrosoftAzure, gcp::GoogleCloudStorage, ObjectStore,
 };
@@ -145,6 +146,10 @@ pub async fn main(logging_level: LoggingLevel, config: Option<Box<Config>>) -> R
     let git_hash = option_env!("GIT_HASH").unwrap_or("UNKNOWN");
     info!(git_hash, "InfluxDB IOx server ready");
 
+    // Start background ChunkMover jobs
+    run_chunk_movers(Arc::clone(&app_server));
+    info!("Chunk Movers ready");
+
     // Wait for both the servers to complete
     let (grpc_server, server) = futures::future::join(grpc_server, http_server).await;
 
@@ -154,6 +159,31 @@ pub async fn main(logging_level: LoggingLevel, config: Option<Box<Config>>) -> R
     info!("InfluxDB IOx server shutting down");
 
     Ok(())
+}
+
+/// Start background ChunkMovers, one move_chunks and one drop_chunks for each DB
+async fn run_chunk_movers(server: Arc<AppServer<ConnectionManager>>) {
+    let database_names = server.db_names_sorted().await;
+         for name in database_names {
+             let _db = match server.db_or_create(&name).await {
+                 Ok(db) => db,
+                 Err(e) => {
+                     // TODO - some errors should probably be ignored, e.g., if
+                     // the database doesn't exist due to a race between this and
+                     // above?
+                     warn!(error= ?e, error_message = ?e.to_string(), db_name = ?name, "Database not found");
+                     continue;
+                 }
+             };
+
+            // tokio::task::spawn(async move {
+            //     db.move_chunks().await
+            // }); 
+
+            // tokio::task::spawn(async move {
+            //     db.drop_chunks().await
+            // }); 
+        }
 }
 
 impl TryFrom<&Config> for ObjectStore {
