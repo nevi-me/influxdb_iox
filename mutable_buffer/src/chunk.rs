@@ -128,7 +128,7 @@ pub struct Chunk {
     pub id: u32,
 
     /// State of this chunk
-    pub state: ChunkState,
+    pub state: Arc<Mutex<ChunkState>>,
 
     /// Time at which the first data was written into this chunk. Note
     /// this is not the same as the timestamps on the data itself
