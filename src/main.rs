@@ -18,6 +18,7 @@ use commands::logging::LoggingLevel;
 use ingest::parquet::writer::CompressionLevel;
 
 mod commands {
+    pub mod chunk;
     pub mod convert;
     pub mod database;
     mod input;
@@ -108,6 +109,7 @@ enum Command {
         /// The input filename to read from
         input: String,
     },
+    Chunk(commands::chunk::Config),
     Database(commands::database::Config),
     Stats(commands::stats::Config),
     // Clippy recommended boxing this variant because it's much larger than the others
@@ -166,6 +168,13 @@ fn main() -> Result<(), std::io::Error> {
                         eprintln!("Stats dump failed: {}", e);
                         std::process::exit(ReturnCode::Failure as _)
                     }
+                }
+            }
+            Some(Command::Chunk(config)) => {
+                logging_level.setup_basic_logging();
+                if let Err(e) = commands::chunk::command(host, config).await {
+                    eprintln!("{}", e);
+                    std::process::exit(ReturnCode::Failure as _)
                 }
             }
             Command::Database(config) => {
