@@ -4,7 +4,7 @@ use data_types::{
 };
 use generated_types::wal;
 
-use crate::{chunk::Chunk, partition::Partition};
+use crate::{chunk::Chunk, chunk::ChunkState, partition::Partition};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -195,6 +195,14 @@ impl MutableBufferDb {
         let partitions = self.partitions.read().expect("mutex poisoned");
         let keys = partitions.keys().cloned().collect();
         Ok(keys)
+    }
+
+    /// Return the list of chunks, in order of id, for the specified
+    /// partition_key
+    pub fn status_specified_chunks(&self, partition_key: &str, chunk_status: ChunkState) -> Vec<Arc<Chunk>> {
+        let partition = self.get_partition(partition_key);
+        let partition = partition.read().expect("mutex poisoned");
+        partition.status_specified_chunks(chunk_status)
     }
 
     /// Return the list of chunks, in order of id, for the specified

@@ -3,7 +3,7 @@
 use generated_types::wal as wb;
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
-use crate::chunk::{Chunk, Error as ChunkError};
+use crate::chunk::{Chunk, ChunkState, Error as ChunkError};
 
 use data_types::partition_metadata::TableSummary;
 use snafu::{ResultExt, Snafu};
@@ -63,6 +63,9 @@ pub struct Partition {
     /// The partition key that is shared by all Chunks in this Partition
     key: String,
 
+    // TODO: Now a chunk has status, we no longer need to keep track of separate open_chunk and 
+    // closed_chunks. we will put them in one list of chunks
+
     /// The currently active, open Chunk; All new writes go to this chunk
     open_chunk: Chunk,
 
@@ -74,6 +77,7 @@ pub struct Partition {
     /// used when `iter()` is used to iterate over chunks in their
     /// creation order
     closed_chunks: BTreeMap<u32, Arc<Chunk>>,
+    //closed_chunks: BTreeMap<u32, Chunk>,
 
     /// Responsible for assigning ids to chunks. Eventually, this might
     /// need to start at a number other than 0.
@@ -125,6 +129,22 @@ impl Partition {
         Ok(())
     }
 
+
+    /// Return the list of chunks of the input status, in order of id, in this
+    /// partition). A Snapshot of the currently active chunk is
+    /// returned. The snapshot will not be affected by future inserts
+    pub fn status_specified_chunks(&self, chunk_status: ChunkState) -> Vec<Arc<Chunk>> {
+        let chunks: Vec<_> = self
+            .closed_chunks 
+            .iter()
+            .filter(|(_, chunk)| chunk.same_state(chunk_status))
+            .map(|(_, chunk)| Arc::clone(&chunk))
+            .collect::<Vec<_>>();
+
+        chunks
+    }
+
+
     /// Return the list of chunks, in order of id, in this
     /// partition). A Snapshot of the currently active chunk is
     /// returned. The snapshot will not be affected by future inserts
@@ -154,6 +174,20 @@ impl Partition {
             }
             .fail()
         }
+    }
+
+    pub fn advance_chunk_state(&mut self, chunk_id:u32) {
+        if let Some(chunk) = self.closed_chunks.get(&chunk_id) {
+            chunk.advance_state();
+        } else {
+            // TODO: How to throw this exception?
+            // UnknownChunk {
+            //     partition_key: &self.key,
+            //     chunk_id,
+            // }
+            panic!("UnknownChunk (Partition key: {}, chunk id: {}", &self.key, chunk_id);
+        }
+
     }
 
     /// Get a snapshot of the currently open chunk (that can be queried)

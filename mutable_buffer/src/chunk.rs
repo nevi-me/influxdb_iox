@@ -19,6 +19,7 @@ use crate::{
 };
 use snafu::{OptionExt, ResultExt, Snafu};
 
+
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Error writing table '{}': {}", table_name, source))]
@@ -111,10 +112,23 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ChunkState {
+    Open,
+    Closing,
+    Closed,
+    Moving,
+    Moved
+}
+
 #[derive(Debug, Clone)]
 pub struct Chunk {
     /// The id for this chunk
     pub id: u32,
+
+    /// State of this chunk
+    pub state: ChunkState,
 
     /// Time at which the first data was written into this chunk. Note
     /// this is not the same as the timestamps on the data itself
@@ -144,12 +158,64 @@ impl Chunk {
     pub fn new(id: u32) -> Self {
         Self {
             id,
+            state: ChunkState::Open,
             dictionary: Dictionary::new(),
             tables: HashMap::new(),
             time_of_first_write: None,
             time_of_last_write: None,
             time_closed: None,
         }
+    }
+
+    pub fn is_open(&self) -> bool {
+        if self.state == ChunkState::Open {
+            true
+        } else { false }
+    }
+
+    pub fn is_closing(&self) -> bool {
+        if self.state == ChunkState::Closing {
+            true
+        } else { false }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        if self.state == ChunkState::Closed {
+            true
+        } else { false }
+    }
+
+    pub fn is_moving(&self) -> bool {
+        if self.state == ChunkState::Moving {
+            true
+        } else { false }
+    }
+
+    pub fn is_moved(&self) -> bool {
+        if self.state == ChunkState::Moved {
+            true
+        } else { false }
+    }
+
+    pub fn same_state(&self, chunk_state: ChunkState) -> bool {
+        match chunk_state {
+            ChunkState::Open => self.is_open(),
+            ChunkState::Closing => self.is_closing(),
+            ChunkState::Closed => self.is_closed(),
+            ChunkState::Moving => self.is_moving(),
+            ChunkState::Moved => self.is_moved(),
+        }
+    }
+
+    pub fn advance_state(&mut self) {
+
+        self.state = match self.state {
+            ChunkState::Open => ChunkState::Closing,
+            ChunkState::Closing => ChunkState::Closed,
+            ChunkState::Closed => ChunkState::Moving,
+            ChunkState::Moving => ChunkState::Moved,
+            ChunkState::Moved => ChunkState::Moved, // Or we can panic here?
+        };
     }
 
     pub fn write_entry(&mut self, entry: &wb::WriteBufferEntry<'_>) -> Result<()> {
@@ -430,12 +496,12 @@ impl Chunk {
 
     pub fn table_to_arrow_one_batch(
         &self,
-        dst: &mut RecordBatch,
+        _dst: &mut RecordBatch,
         table_name: &str,
         selection: Selection<'_>,
     ) -> Result<()> {
         if let Some(table) = self.table(table_name)? {
-            let dst = &table
+            let _dst = &table
                     .to_arrow(&self, selection)
                     .context(NamedTableError { table_name })?;
         }

@@ -181,6 +181,10 @@ async fn run_chunk_movers(server: Arc<AppServer<ConnectionManager>>) {
             // }); 
 
             // tokio::task::spawn(async move {
+            //     db.advance_successful_moving_chunks().await
+            // }); 
+
+            // tokio::task::spawn(async move {
             //     db.drop_chunks().await
             // }); 
         }
