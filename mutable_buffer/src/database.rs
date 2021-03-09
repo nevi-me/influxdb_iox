@@ -199,10 +199,14 @@ impl MutableBufferDb {
 
     /// Return the list of chunks, in order of id, for the specified
     /// partition_key
-    pub fn status_specified_chunks(&self, partition_key: &str, chunk_status: ChunkState) -> Vec<Arc<Chunk>> {
+    pub fn state_specified_chunks(
+        &self,
+        partition_key: &str,
+        chunk_state: ChunkState,
+    ) -> Vec<Arc<Chunk>> {
         let partition = self.get_partition(partition_key);
         let partition = partition.read().expect("mutex poisoned");
-        partition.status_specified_chunks(chunk_status)
+        partition.state_specified_chunks(chunk_state)
     }
 
     /// Return the list of chunks, in order of id, for the specified

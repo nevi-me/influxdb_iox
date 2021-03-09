@@ -9,11 +9,10 @@ use std::{
     },
 };
 
-//use arrow_deps::arrow::ipc::RecordBatch;
 use arrow_deps::arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use data_types::{data::ReplicatedWrite, database_rules::DatabaseRules, selection::Selection};
-use mutable_buffer::MutableBufferDb;
+use mutable_buffer::{chunk::Chunk, chunk::ChunkState, MutableBufferDb};
 use parking_lot::Mutex;
 use query::{Database, PartitionChunk};
 use read_buffer::Database as ReadBufferDb;
@@ -22,7 +21,7 @@ use snafu::{OptionExt, ResultExt, Snafu};
 
 use crate::buffer::Buffer;
 
-use tracing::{debug,info};
+use tracing::{debug, info};
 
 mod chunk;
 pub(crate) use chunk::DBChunk;
@@ -36,8 +35,17 @@ pub enum Error {
         source: mutable_buffer::chunk::Error,
     },
 
-    #[snafu(display("Too many RecordBatches in a Mutable Buffer partition {}, chunk {}, table {}", partition_key, chunk_id, table_name))]
-    MutableBufferChunkBatch { partition_key: String, chunk_id: u32, table_name: String},
+    #[snafu(display(
+        "Too many RecordBatches in a Mutable Buffer partition {}, chunk {}, table {}",
+        partition_key,
+        chunk_id,
+        table_name
+    ))]
+    MutableBufferChunkBatch {
+        partition_key: String,
+        chunk_id: u32,
+        table_name: String,
+    },
 
     #[snafu(display("Unknown Mutable Buffer Chunk {}", chunk_id))]
     UnknownMutableBufferChunk { chunk_id: u32 },
@@ -102,6 +110,7 @@ pub struct Db {
     #[serde(skip)]
     sequence: AtomicU64,
 }
+
 impl Db {
     pub fn new(
         rules: DatabaseRules,
@@ -120,21 +129,28 @@ impl Db {
         }
     }
 
-    /// . Moves all chunks with "closed" status from Mutable Buffer to Read Buffer
-    ///    The chunks' status will be switched from "closed" to "moving" at the start of the process
-    /// . For "moving" chunk, we will check all of their tables that are not in the read buffer yet and 
+    /// . Moves all chunks with "closed" status from Mutable Buffer to Read
+    /// Buffer    The chunks' status will be switched from "closed" to
+    /// "moving" at the start of the process . For "moving" chunk, we will
+    /// check all of their tables that are not in the read buffer yet and
     ///     If that table is still being moved by previous moving cycle:
-    ///         Either cancel it (if long enough) and move it again 
+    ///         Either cancel it (if long enough) and move it again
     //          Or do nothing (which means let it done)
     ///     Else (which means failed previously), move it again
     ///          
     pub async fn move_chunks(&self) {
-        debug!("Background move_chunks for Database {} starts", self.rules.name);
+        debug!(
+            "Background move_chunks for Database {} starts",
+            self.rules.name
+        );
 
         loop {
             // Sleep and wait
             tokio::time::sleep(self.rules.chunk_mover_duration).await;
-            debug!("Background move_chunks for Database {} starts a new cycle", self.rules.name);
+            debug!(
+                "Background move_chunks for Database {} starts a new cycle",
+                self.rules.name
+            );
             let now = std::time::Instant::now();
 
             //-------------------------------------------
@@ -142,21 +158,23 @@ impl Db {
             // Collect closed chunks
             let partition_chunks = self.collect_chunks(ChunkState::Closed).unwrap();
             // Get Data for tables of each chunk
-            let batches = self.get_table_data_of_chunks(partition_chunks).unwrap();
+            let _batches = self.get_table_data_of_chunks(partition_chunks).unwrap();
             // Now spawn tasks for the each table data batch
-            for (partition_key, chunk_id, table_name, data) in batches { // TODO
-                // tokio::task::spawn(|...|
-                //     self.read_buffer
-                //        .upsert_partition(partition_key, chunk_id, table_name, data);
-                //     chunk_num_tables(p_key, c_id)--
-            }
+            // for (partition_key, chunk_id, table_name, data) in batches { // TODO
+            //     // tokio::task::spawn(|...|
+            //     //     self.read_buffer
+            //     //        .upsert_partition(partition_key, chunk_id, table_name, data);
+            //     //     chunk_num_tables(p_key, c_id)--
+            // }
 
             //--------------------------------------------
-            // Move the tables of "moving" chunks that have ot been successfully moved by previous cycle
-            // Collect moving chunks
-            let partition_chunks = self.collect_chunks(ChunkState::Moving).unwrap();
-            // Get Data for tables of each chunk that have not been in read buffer yet (which means they have not been successfully moved in last cycle)
-            // let batches = self.get_remaining_table_data_of_chunks(partition_chunks).unwrap(); // TODO
+            // Move the tables of "moving" chunks that have ot been successfully moved by
+            // previous cycle Collect moving chunks
+            let _partition_chunks = self.collect_chunks(ChunkState::Moving).unwrap();
+            // Get Data for tables of each chunk that have not been in read buffer yet
+            // (which means they have not been successfully moved in last cycle)
+            // let batches =
+            // self.get_remaining_table_data_of_chunks(partition_chunks).unwrap(); // TODO
             // // Now spawn tasks for each table data batch
             // for (partition_key, chunk_id, table_name, data) in batches {  // TODO
             //     // tokio::task::spawn(|...|
@@ -165,17 +183,27 @@ impl Db {
             //     //     chunk_num_tables(p_key, c_id)--
             // }
 
-            debug!("Background move_chunks for Database {} finished checking a cycle in {:?}", self.rules.name, now.elapsed());
+            debug!(
+                "Background move_chunks for Database {} finished checking a cycle in {:?}",
+                self.rules.name,
+                now.elapsed()
+            );
         }
     }
 
     /// Advance "moving" chunks whose all tables are in read buffer to "moved"
     pub async fn advance_successful_moving_chunks(&self) {
-        debug!("Background advance_successful_moving_chunks for Database {} starts", self.rules.name);
+        debug!(
+            "Background advance_successful_moving_chunks for Database {} starts",
+            self.rules.name
+        );
         loop {
             // Sleep and wait
             tokio::time::sleep(self.rules.chunk_mover_duration).await;
-            debug!("Background advance_successful_moving_chunks for Database {} starts a new cycle", self.rules.name);
+            debug!(
+                "Background advance_successful_moving_chunks for Database {} starts a new cycle",
+                self.rules.name
+            );
             let now = std::time::Instant::now();
 
             // Collect all "moving" chunks
@@ -184,7 +212,7 @@ impl Db {
                 // Get all tables of this chunk
                 let tables = self.get_chunk_tables(partition_key.as_str(), chunk_id);
                 // Check if all tables of the chunk are in read buffer
-                if  self.all_tables_in_read_buffer(partition_key.as_str(), chunk_id, tables) { 
+                if self.all_tables_in_read_buffer(partition_key.as_str(), chunk_id, tables) {
                     self.advance_chunk_state(partition_key.as_str(), chunk_id);
                 }
             }
@@ -195,27 +223,38 @@ impl Db {
 
     /// Drops moved chunks from Mutable Buffer
     pub async fn drop_chunks(&self) {
-        debug!("Background drop_chunks for Database {} starts", self.rules.name);
+        debug!(
+            "Background drop_chunks for Database {} starts",
+            self.rules.name
+        );
         loop {
             // Sleep and wait
             tokio::time::sleep(self.rules.chunk_mover_duration).await;
-            debug!("Background drop_chunks for Database {} starts a new cycle", self.rules.name);
+            debug!(
+                "Background drop_chunks for Database {} starts a new cycle",
+                self.rules.name
+            );
             let now = std::time::Instant::now();
 
             // Collect all moved chunks to drop
-            let partition_chunks = self.collect_chunks(ChunkState::Moved).unwrap();
-            for (partition_key, chunk_id) in partition_chunks {
-                self.drop_mutable_buffer_chunk(partition_key.as_str(), chunk_id)
-            }
+            // TODO: turn this on when starting integrating
+            // let partition_chunks = self.collect_chunks(ChunkState::Moved).unwrap();
+            // for (partition_key, chunk_id) in partition_chunks {
+            //     self.drop_mutable_buffer_chunk(partition_key.as_str(), chunk_id);
+            // }
 
-            debug!("Background drop_chunks for Database {} finished checking a cycle in {:?}", self.rules.name, now.elapsed());
+            debug!(
+                "Background drop_chunks for Database {} finished checking a cycle in {:?}",
+                self.rules.name,
+                now.elapsed()
+            );
         }
     }
 
-    /// Return all chunks of mutable buffer that are eligible to be moved to read buffer
-    /// -- Chunk with status "closed" are eligible to be moved
-    /// -- Before the chunks are returned, their status is switched to "moving" 
-    pub fn collect_chunks(&self, chunk_state:ChunkState) -> Result<Vec<(String, u32)>> {
+    /// Return all chunks of mutable buffer that are eligible to be moved to
+    /// read buffer -- Chunk with status "closed" are eligible to be moved
+    /// -- Before the chunks are returned, their status is switched to "moving"
+    pub fn collect_chunks(&self, chunk_state: ChunkState) -> Result<Vec<(String, u32)>> {
         // Get all partitions
         let partition_keys = self.partition_keys().unwrap();
 
@@ -223,17 +262,18 @@ impl Db {
         let mut partition_chunks: Vec<(String, u32)> = vec![];
         for partition_key in partition_keys {
             // Get all closed chunks of the mutable buffer of this partition_key
-            let chunks = self.mutable_buffer_status_specified_chunks(partition_key.as_str(), chunk_state);
-            let mut part_chunks: Vec<(String, u32)>  = chunks
+            let chunks =
+                self.mutable_buffer_state_specified_chunks(partition_key.as_str(), chunk_state);
+            let mut part_chunks: Vec<(String, u32)> = chunks
                 .iter()
                 .map(move |chunk| (partition_key.clone(), chunk.id()))
                 .collect();
 
-            partition_chunks.append(&mut part_chunks); 
+            partition_chunks.append(&mut part_chunks);
 
             // Advance the chunks' state from "closed" to "moving"
             if chunk_state == ChunkState::Closed {
-                for (partition_key, chunk_id)  in part_chunks {
+                for (partition_key, chunk_id) in part_chunks {
                     self.advance_chunk_state(partition_key.as_str(), chunk_id);
                 }
             }
@@ -243,61 +283,81 @@ impl Db {
     }
 
     /// Get the mutable buffer chunk of a given partition key and chunk id
-    pub fn get_mutable_buffer_chunk(&self, partition_key: &str, chunk_id: u32) -> Result<Arc<Chunk>> {
-        self
-            .mutable_buffer
+    pub fn get_mutable_buffer_chunk(
+        &self,
+        partition_key: &str,
+        chunk_id: u32,
+    ) -> Result<Arc<Chunk>> {
+        self.mutable_buffer
             .as_ref()
             .context(DatatbaseNotWriteable)?
             .get_chunk(partition_key, chunk_id)
-            .context(UnknownMutableBufferChunk { chunk_id })?
+            .context(UnknownMutableBufferChunk { chunk_id }) //?
     }
 
     /// Advance the state of a given chunk
-    pub fn advance_chunk_state(partition_key: &str, chunk_id: u32) {
+    pub fn advance_chunk_state(&self, partition_key: &str, chunk_id: u32) {
         // Get mutable buffer chunks of the ID(partition_key, chunk_id)
-        let mb_chunk = self.get_mutable_buffer_chunk(partition_key, chunk_id);
+        let mb_chunk = self
+            .get_mutable_buffer_chunk(partition_key, chunk_id)
+            .unwrap();
         mb_chunk.advance_state();
     }
 
     /// Get all table names of a given chunk
-    pub fn get_chunk_tables(partition_key: &str, chunk_id: u32) -> <Vec<String>{
-        let mb_chunk = self.get_mutable_buffer_chunk(partition_key, chunk_id);
+    pub fn get_chunk_tables(&self, partition_key: &str, chunk_id: u32) -> Vec<String> {
+        let mb_chunk = self
+            .get_mutable_buffer_chunk(partition_key, chunk_id)
+            .unwrap();
 
         mb_chunk
             .table_stats()
             .unwrap()
             .iter()
-            .map(|stats| stats.name)
-            .collect();
+            .map(|stats| stats.name.clone())
+            .collect()
     }
 
-    pub fn all_tables_in_read_buffer(partition_key: &str, chunk_id:u32, tables: Vec<&str>) -> bool {
-        
-        for table in tables {
-            if self.read_buffer().has_table(partition_key, vec![chunk_id]) == false {
-                return false
+    pub fn all_tables_in_read_buffer(
+        &self,
+        partition_key: &str,
+        chunk_id: u32,
+        table_names: Vec<String>,
+    ) -> bool {
+        let chunk_ids = [chunk_id];
+        for table_name in table_names {
+            if !self
+                .read_buffer
+                .has_table(partition_key, table_name.as_str(), &chunk_ids)
+            {
+                return false;
             }
         }
-        
-        return true
+
+        true
     }
 
     /// Return data of table of a given chunk
-    /// Input: a list of chunks in format: Vec<(partition_key: String, chunk_id: u32)>
-    /// Output: a list of table data for each input chunk:
-    ///         Vec<(partition_key: String, chunk_id: u32, table_name: String, data: RecordBatch)>     
+    /// Input: a list of chunks in format: Vec<(partition_key: String, chunk_id:
+    /// u32)> Output: a list of table data for each input chunk:
+    ///         Vec<(partition_key: String, chunk_id: u32, table_name: String,
+    /// data: RecordBatch)>
 
-    pub fn get_table_data_of_chunks(&self, chunks: Vec<(&str, u32)>) 
-                -> Result< Vec<(&str, u32, &str, RecordBatch)> > {
-             
+    pub fn get_table_data_of_chunks(
+        &self,
+        chunks: Vec<(String, u32)>,
+    ) -> Result<Vec<(String, u32, String, RecordBatch)>> {
         let mut chunk_table_data = Vec::new();
         for (partition_key, chunk_id) in chunks {
-            let mut chk_table_data = get_table_data_of_chunk(partition_key, chunk_id);
-            chunk_table_data.append(chk_table_data);
+            let mut chk_table_data = self
+                .get_table_data_of_chunk(partition_key, chunk_id)
+                .unwrap();
+            chunk_table_data.append(&mut chk_table_data);
         }
         Ok(chunk_table_data)
     }
-    // pub fn get_table_data_of_chunks(&self, chunks: Vec<(String, u32)>) 
+
+    // pub fn get_table_data_of_chunks(&self, chunks: Vec<(String, u32)>)
     //             -> Result< Vec<(String, u32, String, RecordBatch)> > {
 
     //     let mut chunk_table_data = Vec::new();
@@ -310,8 +370,9 @@ impl Db {
     //         //         .context(DatatbaseNotWriteable)?
     //         //         .get_chunk(partition_key.as_str(), chunk_id)
     //         //         .context(UnknownMutableBufferChunk { chunk_id })?;
-                    
-    //         let mb_chunk = self.get_mutable_buffer_chunk(partition_key.as_str(), chunk_id);
+
+    //         let mb_chunk = self.get_mutable_buffer_chunk(partition_key.as_str(),
+    // chunk_id);
 
     //         // Get data for each table of the chunk
     //         for stats in mb_chunk.table_stats().unwrap() {
@@ -322,34 +383,38 @@ impl Db {
 
     //             // Make sure there is only one batch in the batches
     //             if batches.len() != 1 {
-    //                 panic!("Each table in a partition should have one RecordBatch. Partition {}, chunk {}, table {}", partition_key, chunk_id, stats.name);
-    //                 // TODO: not sure how to do this yet
-    //                 // Err(MutableBufferChunkBatch(partition_key, chunk_id, stats.name))
-    //             } else {
+    //                 panic!("Each table in a partition should have one
+    // RecordBatch. Partition {}, chunk {}, table {}", partition_key, chunk_id,
+    // stats.name);                 // TODO: not sure how to do this yet
+    //                 // Err(MutableBufferChunkBatch(partition_key, chunk_id,
+    // stats.name))             } else {
     //                 let batch = batches.pop().unwrap();
-    //                 chunk_table_data.push((partition_key.clone(), chunk_id, stats.name.clone(), batch));
-    //             }
+    //                 chunk_table_data.push((partition_key.clone(), chunk_id,
+    // stats.name.clone(), batch));             }
     //         }
     //     }
 
     //     Ok(chunk_table_data)
     // }
 
-
     //TODO
     // pub fn get_remaining_table_data_of_chunks(partition_chunks) {
 
     // }
 
-    pub fn get_table_data_of_chunk(&self, partition_key: &str, chunk_id:u32)  
-            -> Result< Vec<(&str, u32, &str, RecordBatch)> > {
-        
+    pub fn get_table_data_of_chunk(
+        &self,
+        partition_key: String,
+        chunk_id: u32,
+    ) -> Result<Vec<(String, u32, String, RecordBatch)>> {
         let mut chunk_table_data = Vec::new();
 
-        let mb_chunk = self.get_mutable_buffer_chunk(partition_key.as_str(), chunk_id);
+        let mb_chunk = self
+            .get_mutable_buffer_chunk(partition_key.as_str(), chunk_id)
+            .unwrap();
         // Get data for each table of the chunk
         for stats in mb_chunk.table_stats().unwrap() {
-            let mut batches  = Vec::new();
+            let mut batches = Vec::new();
             mb_chunk
                 .table_to_arrow(&mut batches, &stats.name, Selection::All)
                 .unwrap();
@@ -358,15 +423,15 @@ impl Db {
             if batches.len() != 1 {
                 panic!("Each table in a partition should have one RecordBatch. Partition {}, chunk {}, table {}", partition_key, chunk_id, stats.name);
                 // TODO: not sure how to do this yet
-                // Err(MutableBufferChunkBatch(partition_key, chunk_id, stats.name))
+                // Err(MutableBufferChunkBatch(partition_key, chunk_id,
+                // stats.name))
             } else {
                 let batch = batches.pop().unwrap();
-                chunk_table_data.push((partition_key.clone(), chunk_id, stats.name.as_str().clone(), batch));
+                chunk_table_data.push((partition_key.clone(), chunk_id, stats.name.clone(), batch));
             }
         }
 
         Ok(chunk_table_data)
-
     }
 
     /// Rolls over the active chunk in the database's specified partition
@@ -381,10 +446,14 @@ impl Db {
         }
     }
 
-    pub fn mutable_buffer_status_specified_chunks(&self, partition_key: &str, chunk_status: ChunkState) -> Vec<Arc<DBChunk>> {
+    pub fn mutable_buffer_state_specified_chunks(
+        &self,
+        partition_key: &str,
+        chunk_state: ChunkState,
+    ) -> Vec<Arc<DBChunk>> {
         let chunks = if let Some(mutable_buffer) = self.mutable_buffer.as_ref() {
             mutable_buffer
-                .status_specified_chunks(partition_key, chunk_status)
+                .state_specified_chunks(partition_key, chunk_state)
                 .into_iter()
                 .map(DBChunk::new_mb)
                 .collect()
@@ -394,12 +463,14 @@ impl Db {
         chunks
     }
 
-    // TODO (nga): this function is currently used for many purpose so I keep it intact. I will 
-    // write a different function for getting chunks eligible to move to read buffer.
-    // After ChunkMover is done, this function will be either rewritten or removed
+    // TODO (nga): this function is currently used for many purpose so I keep it
+    // intact. I will write a different function for getting chunks eligible to
+    // move to read buffer. After ChunkMover is done, this function will be
+    // either rewritten or removed
 
     // Return a list of all chunks in the mutable_buffer (that can
-    // potentially be migrated into the read buffer or object store: this statement no longer appropriate)
+    // potentially be migrated into the read buffer or object store: this statement
+    // no longer appropriate)
     pub fn mutable_buffer_chunks(&self, partition_key: &str) -> Vec<Arc<DBChunk>> {
         let chunks = if let Some(mutable_buffer) = self.mutable_buffer.as_ref() {
             mutable_buffer
@@ -454,8 +525,6 @@ impl Db {
             chunk_id,
         ))
     }
-
-
 
     // TODO (nga): remove this function
     /// Loads a chunk into the ReadBuffer.

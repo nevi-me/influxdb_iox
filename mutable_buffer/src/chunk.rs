@@ -8,6 +8,7 @@ use arrow_deps::{
 use chrono::{DateTime, Utc};
 use generated_types::wal as wb;
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 use data_types::{partition_metadata::TableSummary, schema::Schema, selection::Selection};
 
@@ -17,8 +18,8 @@ use crate::{
     pred::{ChunkPredicate, ChunkPredicateBuilder},
     table::Table,
 };
+use parking_lot::Mutex;
 use snafu::{OptionExt, ResultExt, Snafu};
-
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -112,14 +113,13 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ChunkState {
     Open,
     Closing,
     Closed,
     Moving,
-    Moved
+    Moved,
 }
 
 #[derive(Debug, Clone)]
@@ -158,7 +158,7 @@ impl Chunk {
     pub fn new(id: u32) -> Self {
         Self {
             id,
-            state: ChunkState::Open,
+            state: Arc::new(Mutex::new(ChunkState::Open)),
             dictionary: Dictionary::new(),
             tables: HashMap::new(),
             time_of_first_write: None,
@@ -168,33 +168,28 @@ impl Chunk {
     }
 
     pub fn is_open(&self) -> bool {
-        if self.state == ChunkState::Open {
-            true
-        } else { false }
+        let state = self.state.lock(); //.expect("mutex poisoned");
+        *state == ChunkState::Open
     }
 
     pub fn is_closing(&self) -> bool {
-        if self.state == ChunkState::Closing {
-            true
-        } else { false }
+        let state = self.state.lock(); //.expect("mutex poisoned");
+        *state == ChunkState::Closing
     }
 
     pub fn is_closed(&self) -> bool {
-        if self.state == ChunkState::Closed {
-            true
-        } else { false }
+        let state = self.state.lock(); //.expect("mutex poisoned");
+        *state == ChunkState::Closed
     }
 
     pub fn is_moving(&self) -> bool {
-        if self.state == ChunkState::Moving {
-            true
-        } else { false }
+        let state = self.state.lock(); //.expect("mutex poisoned");
+        *state == ChunkState::Moving
     }
 
     pub fn is_moved(&self) -> bool {
-        if self.state == ChunkState::Moved {
-            true
-        } else { false }
+        let state = self.state.lock(); //.expect("mutex poisoned");
+        *state == ChunkState::Moved
     }
 
     pub fn same_state(&self, chunk_state: ChunkState) -> bool {
@@ -208,9 +203,9 @@ impl Chunk {
     }
 
     pub fn advance_state(&self) {
-        let state = self.state.lock().expect("mutex poisoned");
+        let mut state = self.state.lock(); //.expect("mutex poisoned");
 
-        *state = match state {
+        *state = match *state {
             ChunkState::Open => ChunkState::Closing,
             ChunkState::Closing => ChunkState::Closed,
             ChunkState::Closed => ChunkState::Moving,
@@ -503,12 +498,11 @@ impl Chunk {
     ) -> Result<()> {
         if let Some(table) = self.table(table_name)? {
             let _dst = &table
-                    .to_arrow(&self, selection)
-                    .context(NamedTableError { table_name })?;
+                .to_arrow(&self, selection)
+                .context(NamedTableError { table_name })?;
         }
         Ok(())
     }
-
 
     /// Returns a vec of the summary statistics of the tables in this chunk
     pub fn table_stats(&self) -> Result<Vec<TableSummary>> {

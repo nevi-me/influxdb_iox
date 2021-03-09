@@ -3,11 +3,11 @@ use crate::commands::{
     server::{load_config, Config, ObjectStore as ObjStoreOpt},
 };
 use hyper::Server;
-use query::DatabaseStore;
 use object_store::{
     self, aws::AmazonS3, azure::MicrosoftAzure, gcp::GoogleCloudStorage, ObjectStore,
 };
 use panic_logging::SendPanicsToTracing;
+use query::DatabaseStore;
 use server::{ConnectionManagerImpl as ConnectionManager, Server as AppServer};
 use snafu::{ResultExt, Snafu};
 use std::{convert::TryFrom, fs, net::SocketAddr, path::PathBuf, sync::Arc};
@@ -147,7 +147,8 @@ pub async fn main(logging_level: LoggingLevel, config: Option<Box<Config>>) -> R
     info!(git_hash, "InfluxDB IOx server ready");
 
     // Start background ChunkMover jobs
-    run_chunk_movers(Arc::clone(&app_server));
+    // TODO: turn this on
+    // run_chunk_movers(Arc::clone(&app_server));
     info!("Chunk Movers ready");
 
     // Wait for both the servers to complete
@@ -161,33 +162,34 @@ pub async fn main(logging_level: LoggingLevel, config: Option<Box<Config>>) -> R
     Ok(())
 }
 
-/// Start background ChunkMovers, one move_chunks and one drop_chunks for each DB
+/// Start background ChunkMovers, one move_chunks and one drop_chunks for each
+/// DB
 async fn run_chunk_movers(server: Arc<AppServer<ConnectionManager>>) {
     let database_names = server.db_names_sorted().await;
-         for name in database_names {
-             let _db = match server.db_or_create(&name).await {
-                 Ok(db) => db,
-                 Err(e) => {
-                     // TODO - some errors should probably be ignored, e.g., if
-                     // the database doesn't exist due to a race between this and
-                     // above?
-                     warn!(error= ?e, error_message = ?e.to_string(), db_name = ?name, "Database not found");
-                     continue;
-                 }
-             };
+    for name in database_names {
+        let _db = match server.db_or_create(&name).await {
+            Ok(db) => db,
+            Err(e) => {
+                // TODO - some errors should probably be ignored, e.g., if
+                // the database doesn't exist due to a race between this and
+                // above?
+                warn!(error= ?e, error_message = ?e.to_string(), db_name = ?name, "Database not found");
+                continue;
+            }
+        };
 
-            // tokio::task::spawn(async move {
-            //     db.move_chunks().await
-            // }); 
+        // tokio::task::spawn(async move {
+        //     db.move_chunks().await
+        // });
 
-            // tokio::task::spawn(async move {
-            //     db.advance_successful_moving_chunks().await
-            // }); 
+        // tokio::task::spawn(async move {
+        //     db.advance_successful_moving_chunks().await
+        // });
 
-            // tokio::task::spawn(async move {
-            //     db.drop_chunks().await
-            // }); 
-        }
+        // tokio::task::spawn(async move {
+        //     db.drop_chunks().await
+        // });
+    }
 }
 
 impl TryFrom<&Config> for ObjectStore {
