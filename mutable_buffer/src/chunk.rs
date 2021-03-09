@@ -207,9 +207,10 @@ impl Chunk {
         }
     }
 
-    pub fn advance_state(&mut self) {
+    pub fn advance_state(&self) {
+        let state = self.state.lock().expect("mutex poisoned");
 
-        self.state = match self.state {
+        *state = match state {
             ChunkState::Open => ChunkState::Closing,
             ChunkState::Closing => ChunkState::Closed,
             ChunkState::Closed => ChunkState::Moving,
