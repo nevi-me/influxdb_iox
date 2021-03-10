@@ -146,8 +146,10 @@ pub async fn main(logging_level: LoggingLevel, config: Option<Box<Config>>) -> R
     let git_hash = option_env!("GIT_HASH").unwrap_or("UNKNOWN");
     info!(git_hash, "InfluxDB IOx server ready");
 
-    // Start background ChunkMover jobs
-    // TODO: turn this on
+    // Start a background service, ChunkMover, that will repeat spawning other
+    // background tasks to move eligible chunks of mutable buffer to read buffer
+    tokio::task::spawn(async move { run_chunk_movers(Arc::clone(&app_server)).await });
+
     // run_chunk_movers(Arc::clone(&app_server));
     info!("Chunk Movers ready");
 
@@ -162,12 +164,42 @@ pub async fn main(logging_level: LoggingLevel, config: Option<Box<Config>>) -> R
     Ok(())
 }
 
-/// Start background ChunkMovers, one move_chunks and one drop_chunks for each
-/// DB
+/// ChunkMover: a background service (or a background task) that is responsible
+/// for moving eligible chunks from mutable buffer to read buffer. This is a
+/// repeating process that ensures all chunks are moved successfully
+/// or move them again if they fail or are stuck for too long for some reasons.
+/// Chunks that are already moved also need to get dropped.
+/// The whole process is done through 4 independent sub-services, each will be
+/// independently correct. To do so, we need to keep track of a state for each
+/// chunk of the mutable buffer.
+///
+/// # State's values:
+///   * `open`: this chunk is still accepting ingesting data and should not be
+///     moved.
+///   * `closing`: this chunk is in a closing process which might accept more
+///     writes or be merged with other chunks or be split into many chunks.
+///   * `closed`: this chunk is closed and becomes immutable which means it is
+///     eligible to move to read buffer.
+///   * `moving`: this chunk is in the moving-process to read buffer. All tables
+///     of the chunk will be moved in parallel in different tasks.
+///   * `moved`: all tables of this chunked have been moved to read buffer. This
+///     chunk is no longer needed and should get dropped.
+///
+/// # Sub-services
+/// For each DB, four major sub-services will be spawned, each repeat their
+/// below duty cycle after some sleep.
+///   * `move_chunks`: to move "closed" chunks (eligible chunks) of mutable
+///     buffer to read buffer. Before the process starts, the "closed" chunk
+///     will be advanced to "moving".
+///   * `move_moving_chunks`: to move chunks that have been moved & marked
+///     "moving" but either failed or still running after a while.
+///   * `advance_successful_moving_chunks`: to advance "moving" to "moved" if
+///     all of its tables have been moved into read buffer.
+///   * `drop_chunks`: to drop all "moved" chunks.
 async fn run_chunk_movers(server: Arc<AppServer<ConnectionManager>>) {
     let database_names = server.db_names_sorted().await;
     for name in database_names {
-        let _db = match server.db_or_create(&name).await {
+        let db = match server.db_or_create(&name).await {
             Ok(db) => db,
             Err(e) => {
                 // TODO - some errors should probably be ignored, e.g., if
@@ -178,17 +210,23 @@ async fn run_chunk_movers(server: Arc<AppServer<ConnectionManager>>) {
             }
         };
 
-        // tokio::task::spawn(async move {
-        //     db.move_chunks().await
-        // });
+        // Move "closed" chunks
+        let service_db = Arc::clone(&db);
+        tokio::task::spawn(async move { service_db.move_chunks().await });
 
-        // tokio::task::spawn(async move {
-        //     db.advance_successful_moving_chunks().await
-        // });
+        // Move "moving" chunks
+        // TODO: need to discuss this further with Edd and see if we can use
+        // anything from Raphael's task trackers & cancel a long-running task
+        // let service_db = Arc::clone(&db);
+        // tokio::task::spawn(async move { service_db.move_moving_chunks().await } );
 
-        // tokio::task::spawn(async move {
-        //     db.drop_chunks().await
-        // });
+        // Advance "moving" chunks to "moved"
+        let service_db = Arc::clone(&db);
+        tokio::task::spawn(async move { service_db.advance_successful_moving_chunks().await });
+
+        // Drop "moved" chunks
+        let service_db = Arc::clone(&db);
+        tokio::task::spawn(async move { service_db.drop_chunks().await });
     }
 }
 

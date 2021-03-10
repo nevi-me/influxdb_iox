@@ -168,27 +168,27 @@ impl Chunk {
     }
 
     pub fn is_open(&self) -> bool {
-        let state = self.state.lock(); //.expect("mutex poisoned");
+        let state = self.state.lock();
         *state == ChunkState::Open
     }
 
     pub fn is_closing(&self) -> bool {
-        let state = self.state.lock(); //.expect("mutex poisoned");
+        let state = self.state.lock();
         *state == ChunkState::Closing
     }
 
     pub fn is_closed(&self) -> bool {
-        let state = self.state.lock(); //.expect("mutex poisoned");
+        let state = self.state.lock();
         *state == ChunkState::Closed
     }
 
     pub fn is_moving(&self) -> bool {
-        let state = self.state.lock(); //.expect("mutex poisoned");
+        let state = self.state.lock();
         *state == ChunkState::Moving
     }
 
     pub fn is_moved(&self) -> bool {
-        let state = self.state.lock(); //.expect("mutex poisoned");
+        let state = self.state.lock();
         *state == ChunkState::Moved
     }
 
@@ -203,7 +203,7 @@ impl Chunk {
     }
 
     pub fn advance_state(&self) {
-        let mut state = self.state.lock(); //.expect("mutex poisoned");
+        let mut state = self.state.lock();
 
         *state = match *state {
             ChunkState::Open => ChunkState::Closing,
