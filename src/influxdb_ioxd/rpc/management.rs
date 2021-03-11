@@ -216,18 +216,15 @@ where
         let partition_keys = db.partition_keys()
             .map_err(default_db_error_handler)?;
 
-        if !partition_keys.contains(&partition_key) {
-            return Err(NotFound {
-                resource_type: "partition".to_string(),
-                resource_name: partition_key.to_string(),
-                ..Default::default()
-            }.into())
-        }
+        let partition = partition_keys.contains(&partition_key) {
+            // TODO: fill out some actually interesting partition details here
+            Some(Partition {
+                key: partition_key
+            })
+        } else {
+            None
+        };
 
-        // TODO: fill out some actually interesting partition details here
-        let partition = Some(Partition {
-            key: partition_key
-        });
         Ok(Response::new(GetPartitionResponse {partition}))
     }
 }
