@@ -119,7 +119,6 @@ pub enum ChunkState {
     Closing,
     Closed,
     Moving,
-    Moved,
 }
 
 #[derive(Debug, Clone)]
@@ -128,7 +127,7 @@ pub struct Chunk {
     pub id: u32,
 
     /// State of this chunk
-    pub state: Arc<Mutex<ChunkState>>,
+    state: Arc<Mutex<ChunkState>>,
 
     /// Time at which the first data was written into this chunk. Note
     /// this is not the same as the timestamps on the data itself
@@ -167,51 +166,27 @@ impl Chunk {
         }
     }
 
-    pub fn is_open(&self) -> bool {
-        let state = self.state.lock();
-        *state == ChunkState::Open
-    }
-
-    pub fn is_closing(&self) -> bool {
-        let state = self.state.lock();
-        *state == ChunkState::Closing
-    }
-
-    pub fn is_closed(&self) -> bool {
-        let state = self.state.lock();
-        *state == ChunkState::Closed
-    }
-
-    pub fn is_moving(&self) -> bool {
-        let state = self.state.lock();
-        *state == ChunkState::Moving
-    }
-
-    pub fn is_moved(&self) -> bool {
-        let state = self.state.lock();
-        *state == ChunkState::Moved
-    }
-
     pub fn same_state(&self, chunk_state: ChunkState) -> bool {
-        match chunk_state {
-            ChunkState::Open => self.is_open(),
-            ChunkState::Closing => self.is_closing(),
-            ChunkState::Closed => self.is_closed(),
-            ChunkState::Moving => self.is_moving(),
-            ChunkState::Moved => self.is_moved(),
+        chunk_state == *self.state.lock()
+    }
+
+    pub fn next_state(&self) -> Option<ChunkState> {
+        let state = self.state.lock();
+
+        match *state {
+            ChunkState::Open => Some(ChunkState::Closing),
+            ChunkState::Closing => Some(ChunkState::Closed),
+            ChunkState::Closed => Some(ChunkState::Moving),
+            ChunkState::Moving => None,
         }
     }
 
-    pub fn advance_state(&self) {
+    // To avoid repeating advancing in a race condition, only advance if needed
+    pub fn advance_state(&self, next_state: ChunkState) {
         let mut state = self.state.lock();
-
-        *state = match *state {
-            ChunkState::Open => ChunkState::Closing,
-            ChunkState::Closing => ChunkState::Closed,
-            ChunkState::Closed => ChunkState::Moving,
-            ChunkState::Moving => ChunkState::Moved,
-            ChunkState::Moved => ChunkState::Moved, // Or we can panic here?
-        };
+        if self.next_state() == Some(next_state) {
+            *state = next_state
+        }
     }
 
     pub fn write_entry(&mut self, entry: &wb::WriteBufferEntry<'_>) -> Result<()> {

@@ -14,6 +14,8 @@ use influxdb_line_protocol::ParsedLine;
 use crate::field_validation::{FromField, FromFieldOpt, FromFieldString, FromFieldVec};
 use crate::DatabaseName;
 
+use std::time::Duration;
+
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Error in {}: {}", source_module, source))]
@@ -25,7 +27,7 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-const DEFAULT_CHUNK_MOVER_CHECK_DURATION: std::time::Duration = std::time::Duration::from_secs(10); // 10 seconds
+const DEFAULT_CHUNK_MOVER_CHECK_DURATION: Duration = Duration::from_secs(10);
 
 /// DatabaseRules contains the rules for replicating data, sending data to
 /// subscribers, and querying data for a single database.
@@ -117,7 +119,7 @@ pub struct DatabaseRules {
     pub mutable_buffer_config: Option<MutableBufferConfig>,
 
     /// Duration for chunk movers to wake up and do move & drop chunks
-    #[serde(default)]
+    #[serde(default = "DatabaseRules::chunk_mover_duration_default")]
     pub chunk_mover_duration: std::time::Duration,
 }
 
@@ -132,10 +134,15 @@ impl DatabaseRules {
 
     pub fn new() -> Self {
         Self {
-            mutable_buffer_config: MutableBufferConfig::default_option(),
-            chunk_mover_duration: DEFAULT_CHUNK_MOVER_CHECK_DURATION,
+            // TODO: Add tests before removing these lines
+            //mutable_buffer_config: MutableBufferConfig::default_option(),
+            //chunk_mover_duration: DEFAULT_CHUNK_MOVER_CHECK_DURATION,
             ..Default::default()
         }
+    }
+
+    pub fn chunk_mover_duration_default() -> Duration {
+        DEFAULT_CHUNK_MOVER_CHECK_DURATION
     }
 }
 

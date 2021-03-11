@@ -149,8 +149,6 @@ pub async fn main(logging_level: LoggingLevel, config: Option<Box<Config>>) -> R
     // Start a background service, ChunkMover, that will repeat spawning other
     // background tasks to move eligible chunks of mutable buffer to read buffer
     tokio::task::spawn(async move { run_chunk_movers(Arc::clone(&app_server)).await });
-
-    // run_chunk_movers(Arc::clone(&app_server));
     info!("Chunk Movers ready");
 
     // Wait for both the servers to complete
@@ -169,7 +167,7 @@ pub async fn main(logging_level: LoggingLevel, config: Option<Box<Config>>) -> R
 /// repeating process that ensures all chunks are moved successfully
 /// or move them again if they fail or are stuck for too long for some reasons.
 /// Chunks that are already moved also need to get dropped.
-/// The whole process is done through 4 independent sub-services, each will be
+/// The whole process is done through 3 independent sub-services, each will be
 /// independently correct. To do so, we need to keep track of a state for each
 /// chunk of the mutable buffer.
 ///
@@ -182,8 +180,6 @@ pub async fn main(logging_level: LoggingLevel, config: Option<Box<Config>>) -> R
 ///     eligible to move to read buffer.
 ///   * `moving`: this chunk is in the moving-process to read buffer. All tables
 ///     of the chunk will be moved in parallel in different tasks.
-///   * `moved`: all tables of this chunked have been moved to read buffer. This
-///     chunk is no longer needed and should get dropped.
 ///
 /// # Sub-services
 /// For each DB, four major sub-services will be spawned, each repeat their
@@ -193,10 +189,16 @@ pub async fn main(logging_level: LoggingLevel, config: Option<Box<Config>>) -> R
 ///     will be advanced to "moving".
 ///   * `move_moving_chunks`: to move chunks that have been moved & marked
 ///     "moving" but either failed or still running after a while.
-///   * `advance_successful_moving_chunks`: to advance "moving" to "moved" if
-///     all of its tables have been moved into read buffer.
-///   * `drop_chunks`: to drop all "moved" chunks.
+///   * `drop_successful_moving_chunks`: to drop chunks whose tables have been
+///     moved into read buffer.
 async fn run_chunk_movers(server: Arc<AppServer<ConnectionManager>>) {
+    // TODO
+    // (1). DBs must be read inside each service below to make sure new DB and
+    // dropped DBs are included (2).Instead of calling server.db_names_sorted()
+    // there should probably be a server.dbs() method added to the DatabaseStore
+    // trait. I imagine it would look something like:      async fn dbs(&self)
+    // -> Vec<Arc<Self::Database>>;
+
     let database_names = server.db_names_sorted().await;
     for name in database_names {
         let db = match server.db_or_create(&name).await {
@@ -222,11 +224,7 @@ async fn run_chunk_movers(server: Arc<AppServer<ConnectionManager>>) {
 
         // Advance "moving" chunks to "moved"
         let service_db = Arc::clone(&db);
-        tokio::task::spawn(async move { service_db.advance_successful_moving_chunks().await });
-
-        // Drop "moved" chunks
-        let service_db = Arc::clone(&db);
-        tokio::task::spawn(async move { service_db.drop_chunks().await });
+        tokio::task::spawn(async move { service_db.drop_successful_moving_chunks().await });
     }
 }
 
