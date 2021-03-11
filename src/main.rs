@@ -170,7 +170,7 @@ fn main() -> Result<(), std::io::Error> {
                     }
                 }
             }
-            Some(Command::Chunk(config)) => {
+            Command::Chunk(config) => {
                 logging_level.setup_basic_logging();
                 if let Err(e) = commands::chunk::command(host, config).await {
                     eprintln!("{}", e);
