@@ -96,12 +96,6 @@ enum Command {
     List(List),
     // Get details about a particular partition
     Get(Get),
-    // Loads a chunk into the read buffer
-    LoadRbChunk(LoadRbChunk),
-    // Drop a chunk from the mutable buffer
-    DropMbChunk(DropMbChunk),
-    // Drop a chunk from the read buffer
-    DropRbChunk(DropRbChunk),
 }
 
 pub async fn command(url: String, config: Config) -> Result<()> {
@@ -137,39 +131,6 @@ pub async fn command(url: String, config: Config) -> Result<()> {
         Command::List(list) => {
             let List { db_name } = list;
             println!("Listing partitions for database {}", db_name);
-        }
-        Command::LoadRbChunk(load_rb_chunk) => {
-            let LoadRbChunk {
-                db_name,
-                partition_key,
-                chunk_id,
-            } = load_rb_chunk;
-            println!(
-                "Loading Rb chunk for database {} partition {} chunk {}",
-                db_name, partition_key, chunk_id
-            );
-        }
-        Command::DropMbChunk(drop_mb_chunk) => {
-            let DropMbChunk {
-                db_name,
-                partition_key,
-                chunk_id,
-            } = drop_mb_chunk;
-            println!(
-                "Dropping mb chunk for database {} partition {} chunk {}",
-                db_name, partition_key, chunk_id
-            );
-        }
-        Command::DropRbChunk(drop_rb_chunk) => {
-            let DropRbChunk {
-                db_name,
-                partition_key,
-                chunk_id,
-            } = drop_rb_chunk;
-            println!(
-                "Dropping rb chunk for database {} partition {} chunk {}",
-                db_name, partition_key, chunk_id
-            );
         }
     }
 
