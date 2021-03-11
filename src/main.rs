@@ -24,6 +24,7 @@ mod commands {
     mod input;
     pub mod logging;
     pub mod meta;
+    pub mod partition;
     pub mod server;
     pub mod stats;
     pub mod writer;
@@ -111,6 +112,7 @@ enum Command {
     },
     Chunk(commands::chunk::Config),
     Database(commands::database::Config),
+    Partition(commands::partition::Config),
     Stats(commands::stats::Config),
     // Clippy recommended boxing this variant because it's much larger than the others
     Server(Box<commands::server::Config>),
@@ -158,6 +160,13 @@ fn main() -> Result<(), std::io::Error> {
                         eprintln!("Metadata dump failed: {}", e);
                         std::process::exit(ReturnCode::Failure as _)
                     }
+                }
+            }
+            Command::Partition(config) => {
+                logging_level.setup_basic_logging();
+                if let Err(e) = commands::partition::command(host, config).await {
+                    eprintln!("{}", e);
+                    std::process::exit(ReturnCode::Failure as _)
                 }
             }
             Command::Stats(config) => {
