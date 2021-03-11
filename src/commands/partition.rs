@@ -1,22 +1,21 @@
 //! This module implements the `partition` CLI command
 use influxdb_iox_client::{
     connection::Builder,
-    management::{
-        self,
-        //ListPartitionsError
-    },
+    management::{self, GetPartitionError, ListPartitionsError},
 };
-//use std::convert::TryFrom;
 use structopt::StructOpt;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    // #[error("Error listing partitions: {0}")]
-    // ListPartitionError(#[from] ListPartitionsError),
+    #[error("Error listing partitions: {0}")]
+    ListPartitionsError(#[from] ListPartitionsError),
 
-    // #[error("Error interpreting server response: {0}")]
-    // ConvertingResponse(#[from] data_types::partition::Error),
+    #[error("Error getting partition: {0}")]
+    GetPartitionsError(#[from] GetPartitionError),
+
+    #[error("Error rendering response as JSON: {0}")]
+    WritingJson(#[from] serde_json::Error),
 
     // #[error("Error rendering response as JSON: {0}")]
     // WritingJson(#[from] serde_json::Error),
@@ -50,45 +49,6 @@ struct Get {
     partition_key: String,
 }
 
-/// Loads the specified chunk into the read buffer
-#[derive(Debug, StructOpt)]
-struct LoadRbChunk {
-    /// The name of the database
-    db_name: String,
-
-    /// The partition key
-    partition_key: String,
-
-    /// The chunk id
-    chunk_id: String,
-}
-
-/// Drop the specified chunk from the mutable buffer
-#[derive(Debug, StructOpt)]
-struct DropMbChunk {
-    /// The name of the database
-    db_name: String,
-
-    /// The partition key
-    partition_key: String,
-
-    /// The chunk id
-    chunk_id: String,
-}
-
-/// Drop the specified chunk from the read buffer
-#[derive(Debug, StructOpt)]
-struct DropRbChunk {
-    /// The name of the database
-    db_name: String,
-
-    /// The partition key
-    partition_key: String,
-
-    /// The chunk id
-    chunk_id: String,
-}
-
 /// All possible subcommands for partition
 #[derive(Debug, StructOpt)]
 enum Command {
@@ -100,37 +60,33 @@ enum Command {
 
 pub async fn command(url: String, config: Config) -> Result<()> {
     let connection = Builder::default().build(url).await?;
+    let mut client = management::Client::new(connection);
 
     match config.command {
+        Command::List(list) => {
+            let List { db_name } = list;
+            let partition_keys = client.list_partitions(db_name).await?;
+            serde_json::to_writer_pretty(std::io::stdout(), &partition_keys)?;
+        }
         Command::Get(get) => {
             let Get {
                 db_name,
                 partition_key,
             } = get;
-            println!(
-                "getting detail for database {} partition {}",
-                db_name, partition_key
-            );
 
-            // let mut client = management::Client::new(connection);
+            let management::generated_types::Partition { key } =
+                client.get_partition(db_name, partition_key).await?;
 
-            // let partitions = client
-            //     .list_partitions(db_name)
-            //     .await
-            //     .map_err(Error::ListPartitionError)?;
+            // TODO: define a better way of doing this (i.e. move to
+            // using Partition summary that is already in data_types)
+            #[derive(serde::Serialize)]
+            struct PartitionDetail {
+                key: String,
+            }
 
-            // let partitions = partitions
-            //     .into_iter()
-            //     .map(|c|
-            // PartitionSummary::try_from(c).map_err(Error::ConvertingResponse))
-            //     .collect::<Result<Vec<_>>>()?;
+            let partition_detail = PartitionDetail { key };
 
-            // serde_json::to_writer_pretty(std::io::stdout(),
-            // &partitions).map_err(Error::WritingJson)?;
-        }
-        Command::List(list) => {
-            let List { db_name } = list;
-            println!("Listing partitions for database {}", db_name);
+            serde_json::to_writer_pretty(std::io::stdout(), &partition_detail)?;
         }
     }
 

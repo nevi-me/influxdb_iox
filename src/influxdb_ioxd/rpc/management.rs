@@ -181,51 +181,44 @@ where
         let ListPartitionsRequest { db_name } = request.into_inner();
         let db_name = DatabaseName::new(db_name).field("db_name")?;
 
-        let db = self.server.db(&db_name)
-            .ok_or_else(|| {
-                NotFound {
-                    resource_type: "database".to_string(),
-                    resource_name: db_name.to_string(),
-                    ..Default::default()
-                }
-            })?;
+        let db = self.server.db(&db_name).ok_or_else(|| NotFound {
+            resource_type: "database".to_string(),
+            resource_name: db_name.to_string(),
+            ..Default::default()
+        })?;
 
-        let partition_keys = db.partition_keys()
-            .map_err(default_db_error_handler)?;
+        let partition_keys = db.partition_keys().map_err(default_db_error_handler)?;
 
-        Ok(Response::new(ListPartitionsResponse {partition_keys}))
+        Ok(Response::new(ListPartitionsResponse { partition_keys }))
     }
 
     async fn get_partition(
         &self,
         request: Request<GetPartitionRequest>,
     ) -> Result<Response<GetPartitionResponse>, Status> {
-        let GetPartitionRequest { db_name, partition_key } = request.into_inner();
+        let GetPartitionRequest {
+            db_name,
+            partition_key,
+        } = request.into_inner();
         let db_name = DatabaseName::new(db_name).field("db_name")?;
 
-        let db = self.server.db(&db_name)
-            .ok_or_else(|| {
-                NotFound {
-                    resource_type: "database".to_string(),
-                    resource_name: db_name.to_string(),
-                    ..Default::default()
-                }
-            })?;
+        let db = self.server.db(&db_name).ok_or_else(|| NotFound {
+            resource_type: "database".to_string(),
+            resource_name: db_name.to_string(),
+            ..Default::default()
+        })?;
 
         // TODO: get more actual partition details
-        let partition_keys = db.partition_keys()
-            .map_err(default_db_error_handler)?;
+        let partition_keys = db.partition_keys().map_err(default_db_error_handler)?;
 
-        let partition = partition_keys.contains(&partition_key) {
+        let partition = if partition_keys.contains(&partition_key) {
             // TODO: fill out some actually interesting partition details here
-            Some(Partition {
-                key: partition_key
-            })
+            Some(Partition { key: partition_key })
         } else {
             None
         };
 
-        Ok(Response::new(GetPartitionResponse {partition}))
+        Ok(Response::new(GetPartitionResponse { partition }))
     }
 }
 

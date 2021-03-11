@@ -304,14 +304,18 @@ impl Client {
     }
 
     /// List partition keys of a database
-    pub async fn list_partitions(&mut self, db_name: impl Into<String>,) ->Result<Vec<String>, ListPartitionsError> {
+    pub async fn list_partitions(
+        &mut self,
+        db_name: impl Into<String>,
+    ) -> Result<Vec<String>, ListPartitionsError> {
         let db_name = db_name.into();
-        let response = self.inner
+        let response = self
+            .inner
             .list_partitions(ListPartitionsRequest { db_name })
             .await
             .map_err(|status| match status.code() {
                 tonic::Code::NotFound => ListPartitionsError::DatabaseNotFound,
-                _ => ListPartitionsError::ServerError(status)
+                _ => ListPartitionsError::ServerError(status),
             })?;
 
         let ListPartitionsResponse { partition_keys } = response.into_inner();
@@ -320,23 +324,28 @@ impl Client {
     }
 
     /// Get details about a partition
-    pub async fn get_partition(&mut self, db_name: impl Into<String>,
-                               partition_key: impl Into<String>) ->Result<Partition, GetPartitionError> {
+    pub async fn get_partition(
+        &mut self,
+        db_name: impl Into<String>,
+        partition_key: impl Into<String>,
+    ) -> Result<Partition, GetPartitionError> {
         let db_name = db_name.into();
         let partition_key = partition_key.into();
 
-        let response = self.inner
-            .get_partition(GetPartitionRequest { db_name, partition_key })
+        let response = self
+            .inner
+            .get_partition(GetPartitionRequest {
+                db_name,
+                partition_key,
+            })
             .await
             .map_err(|status| match status.code() {
                 tonic::Code::NotFound => GetPartitionError::DatabaseNotFound,
-                _ => GetPartitionError::ServerError(status)
+                _ => GetPartitionError::ServerError(status),
             })?;
 
         let GetPartitionResponse { partition } = response.into_inner();
 
-        partition
-            .ok_or(GetPartitionError::PartitionNotFound)
+        partition.ok_or(GetPartitionError::PartitionNotFound)
     }
-
 }
