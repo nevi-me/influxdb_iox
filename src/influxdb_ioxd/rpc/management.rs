@@ -2,37 +2,19 @@ use std::convert::TryInto;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use tonic::{Request, Response, Status};
-use tracing::error;
-
 use data_types::database_rules::DatabaseRules;
 use data_types::DatabaseName;
-use generated_types::google::{
-    AlreadyExists, FieldViolation, FieldViolationExt, InternalError, NotFound,
-    PreconditionViolation,
-};
+use generated_types::google::{AlreadyExists, FieldViolation, FieldViolationExt, NotFound};
 use generated_types::influxdata::iox::management::v1::*;
 use query::DatabaseStore;
 use server::{ConnectionManager, Error, Server};
+use tonic::{Request, Response, Status};
 
 struct ManagementService<M: ConnectionManager> {
     server: Arc<Server<M>>,
 }
 
-fn default_error_handler(error: Error) -> tonic::Status {
-    match error {
-        Error::IdNotSet => PreconditionViolation {
-            category: "Writer ID".to_string(),
-            subject: "influxdata.com/iox".to_string(),
-            description: "Writer ID must be set".to_string(),
-        }
-        .into(),
-        error => {
-            error!(?error, "Unexpected error");
-            InternalError {}.into()
-        }
-    }
-}
+use super::error::default_error_handler;
 
 #[tonic::async_trait]
 impl<M> management_service_server::ManagementService for ManagementService<M>
@@ -61,7 +43,7 @@ where
         &self,
         _: Request<ListDatabasesRequest>,
     ) -> Result<Response<ListDatabasesResponse>, Status> {
-        let names = self.server.db_names_sorted().await;
+        let names = self.server.db_names_sorted();
         Ok(Response::new(ListDatabasesResponse { names }))
     }
 
@@ -71,7 +53,7 @@ where
     ) -> Result<Response<GetDatabaseResponse>, Status> {
         let name = DatabaseName::new(request.into_inner().name).field("name")?;
 
-        match self.server.db_rules(&name).await {
+        match self.server.db_rules(&name) {
             Some(rules) => Ok(Response::new(GetDatabaseResponse {
                 rules: Some(rules.into()),
             })),
@@ -112,6 +94,53 @@ where
             }
             Err(e) => Err(default_error_handler(e)),
         }
+    }
+
+    async fn list_remotes(
+        &self,
+        _: Request<ListRemotesRequest>,
+    ) -> Result<Response<ListRemotesResponse>, Status> {
+        let remotes = self
+            .server
+            .remotes_sorted()
+            .into_iter()
+            .map(|(id, connection_string)| Remote {
+                id,
+                connection_string,
+            })
+            .collect();
+        Ok(Response::new(ListRemotesResponse { remotes }))
+    }
+
+    async fn update_remote(
+        &self,
+        request: Request<UpdateRemoteRequest>,
+    ) -> Result<Response<UpdateRemoteResponse>, Status> {
+        let remote = request
+            .into_inner()
+            .remote
+            .ok_or_else(|| FieldViolation::required("remote"))?;
+        if remote.id == 0 {
+            return Err(FieldViolation::required("id").scope("remote").into());
+        }
+        self.server
+            .update_remote(remote.id, remote.connection_string);
+        Ok(Response::new(UpdateRemoteResponse {}))
+    }
+
+    async fn delete_remote(
+        &self,
+        request: Request<DeleteRemoteRequest>,
+    ) -> Result<Response<DeleteRemoteResponse>, Status> {
+        let request = request.into_inner();
+        if request.id == 0 {
+            return Err(FieldViolation::required("id").into());
+        }
+        self.server
+            .delete_remote(request.id)
+            .ok_or_else(NotFound::default)?;
+
+        Ok(Response::new(DeleteRemoteResponse {}))
     }
 }
 

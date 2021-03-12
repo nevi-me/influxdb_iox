@@ -36,3 +36,5 @@ COPY --from=build /root/influxdb_iox /usr/bin/influxdb_iox
 EXPOSE 8080 8082
 
 ENTRYPOINT ["/usr/bin/influxdb_iox"]
+
+CMD ["server", "run"]

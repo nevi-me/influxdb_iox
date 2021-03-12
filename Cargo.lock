@@ -1203,6 +1203,7 @@ dependencies = [
  "prost-types",
  "tonic",
  "tonic-build",
+ "tracing",
 ]
 
 [[package]]
@@ -1255,9 +1256,6 @@ version = "0.1.0"
 dependencies = [
  "prost",
  "prost-build",
- "prost-types",
- "tonic",
- "tracing",
 ]
 
 [[package]]
@@ -1502,11 +1500,14 @@ dependencies = [
  "mem_qe",
  "mutable_buffer",
  "object_store",
+ "once_cell",
  "opentelemetry",
  "opentelemetry-jaeger",
  "packers",
  "panic_logging",
+ "parking_lot",
  "predicates",
+ "prettytable-rs",
  "prost",
  "query",
  "rand 0.7.3",

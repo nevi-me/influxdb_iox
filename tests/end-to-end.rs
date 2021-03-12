@@ -1,32 +1,17 @@
 // The test in this file runs the server in a separate thread and makes HTTP
 // requests as a smoke test for the integration of the whole system.
 //
-// As written, only one test of this style can run at a time. Add more data to
-// the existing test to test more scenarios rather than adding more tests in the
-// same style.
+// The servers under test are managed using [`ServerFixture`]
 //
-// Or, change the way this test behaves to create isolated instances by:
-//
-// - Finding an unused port for the server to run on and using that port in the
-//   URL
-// - Creating a temporary directory for an isolated database path
-//
-// Or, change the tests to use one server and isolate through `org_id` by:
-//
-// - Starting one server before all the relevant tests are run
-// - Creating a unique org_id per test
-// - Stopping the server after all relevant tests are run
+// Other rust tests are defined in the various submodules of end_to_end_cases
 
 use std::convert::TryInto;
-use std::process::{Child, Command};
 use std::str;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use std::u32;
 
-use assert_cmd::prelude::*;
 use futures::prelude::*;
 use prost::Message;
-use tempfile::TempDir;
 
 use data_types::{names::org_and_bucket_to_database, DatabaseName};
 use end_to_end_cases::*;
@@ -35,48 +20,23 @@ use generated_types::{
     TimestampRange,
 };
 
-// These port numbers are chosen to not collide with a development ioxd server
-// running locally.
-// TODO(786): allocate random free ports instead of hardcoding.
-// TODO(785): we cannot use localhost here.
-macro_rules! http_bind_addr {
-    () => {
-        "127.0.0.1:8090"
-    };
-}
-macro_rules! grpc_bind_addr {
-    () => {
-        "127.0.0.1:8092"
-    };
-}
-
-const HTTP_BIND_ADDR: &str = http_bind_addr!();
-const GRPC_BIND_ADDR: &str = grpc_bind_addr!();
-
-const HTTP_BASE: &str = concat!("http://", http_bind_addr!());
-const IOX_API_V1_BASE: &str = concat!("http://", http_bind_addr!(), "/iox/api/v1");
-const GRPC_URL_BASE: &str = concat!("http://", grpc_bind_addr!(), "/");
-
-const TOKEN: &str = "InfluxDB IOx doesn't have authentication yet";
-
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+pub mod common;
+
 mod end_to_end_cases;
+
+use common::server_fixture::*;
 
 #[tokio::test]
 async fn read_and_write_data() {
-    let server = TestServer::new().unwrap();
-    server.wait_until_ready().await;
+    let fixture = ServerFixture::create_shared().await;
 
-    let http_client = reqwest::Client::new();
-    let influxdb2 = influxdb2_client::Client::new(HTTP_BASE, TOKEN);
-    let grpc = influxdb_iox_client::connection::Builder::default()
-        .build(GRPC_URL_BASE)
-        .await
-        .unwrap();
-    let mut storage_client = StorageClient::new(grpc.clone());
-    let mut management_client = influxdb_iox_client::management::Client::new(grpc);
+    let influxdb2 = fixture.influxdb2_client();
+    let mut storage_client = StorageClient::new(fixture.grpc_channel());
+    let mut management_client =
+        influxdb_iox_client::management::Client::new(fixture.grpc_channel());
 
     // These tests share data; TODO: a better way to indicate this
     {
@@ -89,22 +49,10 @@ async fn read_and_write_data() {
         let expected_read_data = load_data(&influxdb2, &scenario).await;
         let sql_query = "select * from cpu_load_short";
 
-        read_api::test(&http_client, &scenario, sql_query, &expected_read_data).await;
+        read_api::test(&fixture, &scenario, sql_query, &expected_read_data).await;
         storage_api::test(&mut storage_client, &scenario).await;
-        flight_api::test(&scenario, sql_query, &expected_read_data).await;
+        flight_api::test(&fixture, &scenario, sql_query, &expected_read_data).await;
     }
-
-    // These tests manage their own data
-    storage_api::read_group_test(&mut management_client, &influxdb2, &mut storage_client).await;
-    storage_api::read_window_aggregate_test(
-        &mut management_client,
-        &influxdb2,
-        &mut storage_client,
-    )
-    .await;
-    management_api::test(&mut management_client).await;
-    management_cli::test(GRPC_URL_BASE).await;
-    test_http_error_messages(&influxdb2).await.unwrap();
 }
 
 // TODO: Randomly generate org and bucket ids to ensure test data independence
@@ -305,9 +253,11 @@ async fn write_data(
     Ok(())
 }
 
-// Don't make a separate #test function so that we can reuse the same
-// server process
-async fn test_http_error_messages(client: &influxdb2_client::Client) -> Result<()> {
+#[tokio::test]
+async fn test_http_error_messages() {
+    let server_fixture = ServerFixture::create_shared().await;
+    let client = server_fixture.influxdb2_client();
+
     // send malformed request (bucket id is invalid)
     let result = client
         .write_line_protocol("Bar", "Foo", "arbitrary")
@@ -316,8 +266,6 @@ async fn test_http_error_messages(client: &influxdb2_client::Client) -> Result<(
 
     let expected_error = "HTTP request returned an error: 400 Bad Request, `{\"error\":\"Error parsing line protocol: A generic parsing error occurred: TakeWhile1\",\"error_code\":100}`";
     assert_eq!(result.to_string(), expected_error);
-
-    Ok(())
 }
 
 /// substitutes "ns" --> ns_since_epoch, ns1-->ns_since_epoch+1, etc
@@ -342,119 +290,4 @@ fn substitute_nanos(ns_since_epoch: i64, lines: &[&str]) -> Vec<String> {
             line
         })
         .collect()
-}
-
-struct TestServer {
-    server_process: Child,
-
-    // The temporary directory **must** be last so that it is
-    // dropped after the database closes.
-    #[allow(dead_code)]
-    dir: TempDir,
-}
-
-impl TestServer {
-    fn new() -> Result<Self> {
-        let dir = test_helpers::tmp_dir().unwrap();
-
-        let server_process = Command::cargo_bin("influxdb_iox")
-            .unwrap()
-            // Can enable for debbugging
-            //.arg("-vv")
-            .env("INFLUXDB_IOX_ID", "1")
-            .env("INFLUXDB_IOX_BIND_ADDR", HTTP_BIND_ADDR)
-            .env("INFLUXDB_IOX_GRPC_BIND_ADDR", GRPC_BIND_ADDR)
-            .spawn()
-            .unwrap();
-
-        Ok(Self {
-            dir,
-            server_process,
-        })
-    }
-
-    #[allow(dead_code)]
-    fn restart(&mut self) -> Result<()> {
-        self.server_process.kill().unwrap();
-        self.server_process.wait().unwrap();
-        self.server_process = Command::cargo_bin("influxdb_iox")
-            .unwrap()
-            // Can enable for debbugging
-            //.arg("-vv")
-            .env("INFLUXDB_IOX_DB_DIR", self.dir.path())
-            .env("INFLUXDB_IOX_ID", "1")
-            .spawn()
-            .unwrap();
-        Ok(())
-    }
-
-    async fn wait_until_ready(&self) {
-        // Poll the RPC and HTTP servers separately as they listen on
-        // different ports but both need to be up for the test to run
-        let try_grpc_connect = async {
-            let mut interval = tokio::time::interval(Duration::from_millis(500));
-
-            loop {
-                match influxdb_iox_client::connection::Builder::default()
-                    .build(GRPC_URL_BASE)
-                    .await
-                {
-                    Ok(connection) => {
-                        println!("Successfully connected to server");
-
-                        let mut health = influxdb_iox_client::health::Client::new(connection);
-
-                        match health.check_storage().await {
-                            Ok(_) => {
-                                println!("Storage service is running");
-                                return;
-                            }
-                            Err(e) => {
-                                println!("Error checking storage service status: {}", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        println!("Waiting for gRPC API to be up: {}", e);
-                    }
-                }
-                interval.tick().await;
-            }
-        };
-
-        let try_http_connect = async {
-            let client = reqwest::Client::new();
-            let url = format!("{}/health", HTTP_BASE);
-            let mut interval = tokio::time::interval(Duration::from_millis(500));
-            loop {
-                match client.get(&url).send().await {
-                    Ok(resp) => {
-                        println!("Successfully got a response from HTTP: {:?}", resp);
-                        return;
-                    }
-                    Err(e) => {
-                        println!("Waiting for HTTP server to be up: {}", e);
-                    }
-                }
-                interval.tick().await;
-            }
-        };
-
-        let pair = future::join(try_http_connect, try_grpc_connect);
-
-        let capped_check = tokio::time::timeout(Duration::from_secs(3), pair);
-
-        match capped_check.await {
-            Ok(_) => println!("Server is up correctly"),
-            Err(e) => println!("WARNING: server was not ready: {}", e),
-        }
-    }
-}
-
-impl Drop for TestServer {
-    fn drop(&mut self) {
-        self.server_process
-            .kill()
-            .expect("Should have been able to kill the test server");
-    }
 }

@@ -8,12 +8,15 @@
 )]
 #![allow(clippy::missing_docs_in_private_items)]
 
-pub use client::{health, management};
+pub use client::{health, management, write};
 
 #[cfg(feature = "flight")]
 pub use client::flight;
 
 /// Builder for constructing connections for use with the various gRPC clients
 pub mod connection;
+
+/// Output formatting utilities
+pub mod format;
 
 mod client;

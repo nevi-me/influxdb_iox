@@ -12,7 +12,7 @@ use std::str::FromStr;
 use dotenv::dotenv;
 use structopt::StructOpt;
 use tokio::runtime::Runtime;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use commands::logging::LoggingLevel;
 use ingest::parquet::writer::CompressionLevel;
@@ -24,6 +24,7 @@ mod commands {
     pub mod logging;
     pub mod meta;
     pub mod server;
+    pub mod server_remote;
     pub mod stats;
     pub mod writer;
 }
@@ -83,7 +84,7 @@ struct Config {
     num_threads: Option<usize>,
 
     #[structopt(subcommand)]
-    command: Option<Command>,
+    command: Command,
 }
 
 #[derive(Debug, StructOpt)]
@@ -131,13 +132,12 @@ fn main() -> Result<(), std::io::Error> {
     let tokio_runtime = get_runtime(config.num_threads)?;
     tokio_runtime.block_on(async move {
         let host = config.host;
-
         match config.command {
-            Some(Command::Convert {
+            Command::Convert {
                 input,
                 output,
                 compression_level,
-            }) => {
+            } => {
                 logging_level.setup_basic_logging();
 
                 let compression_level = CompressionLevel::from_str(&compression_level).unwrap();
@@ -149,7 +149,7 @@ fn main() -> Result<(), std::io::Error> {
                     }
                 }
             }
-            Some(Command::Meta { input }) => {
+            Command::Meta { input } => {
                 logging_level.setup_basic_logging();
                 match commands::meta::dump_meta(&input) {
                     Ok(()) => debug!("Metadata dump completed successfully"),
@@ -159,7 +159,7 @@ fn main() -> Result<(), std::io::Error> {
                     }
                 }
             }
-            Some(Command::Stats(config)) => {
+            Command::Stats(config) => {
                 logging_level.setup_basic_logging();
                 match commands::stats::stats(&config).await {
                     Ok(()) => debug!("Storage statistics dump completed successfully"),
@@ -169,37 +169,26 @@ fn main() -> Result<(), std::io::Error> {
                     }
                 }
             }
-            Some(Command::Database(config)) => {
+            Command::Database(config) => {
                 logging_level.setup_basic_logging();
                 if let Err(e) = commands::database::command(host, config).await {
                     eprintln!("{}", e);
                     std::process::exit(ReturnCode::Failure as _)
                 }
             }
-            Some(Command::Writer(config)) => {
+            Command::Writer(config) => {
                 logging_level.setup_basic_logging();
                 if let Err(e) = commands::writer::command(host, config).await {
                     eprintln!("{}", e);
                     std::process::exit(ReturnCode::Failure as _)
                 }
             }
-            Some(Command::Server(config)) => {
+            Command::Server(config) => {
                 // Note don't set up basic logging here, different logging rules apply in server
                 // mode
-                let res = influxdb_ioxd::main(logging_level, Some(config)).await;
-
-                if let Err(e) = res {
-                    error!("Server shutdown with error: {}", e);
-                    std::process::exit(ReturnCode::Failure as _);
-                }
-            }
-            None => {
-                // Note don't set up basic logging here, different logging rules apply in server
-                // mode
-                let res = influxdb_ioxd::main(logging_level, None).await;
-                if let Err(e) = res {
-                    error!("Server shutdown with error: {}", e);
-                    std::process::exit(ReturnCode::Failure as _);
+                if let Err(e) = commands::server::command(logging_level, host, *config).await {
+                    eprintln!("Server command failed: {}", e);
+                    std::process::exit(ReturnCode::Failure as _)
                 }
             }
         }
