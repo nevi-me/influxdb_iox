@@ -7,7 +7,7 @@ use object_store::{
     self, aws::AmazonS3, azure::MicrosoftAzure, gcp::GoogleCloudStorage, ObjectStore,
 };
 use panic_logging::SendPanicsToTracing;
-use query::DatabaseStore;
+use server::chunk_mover::ChunkMover;
 use server::{ConnectionManagerImpl as ConnectionManager, Server as AppServer};
 use snafu::{ResultExt, Snafu};
 use std::{convert::TryFrom, fs, net::SocketAddr, path::PathBuf, sync::Arc};
@@ -145,7 +145,7 @@ pub async fn main(logging_level: LoggingLevel, config: RunConfig) -> Result<()> 
 
     // Start a background service, ChunkMover, that will repeat spawning other
     // background tasks to move eligible chunks of mutable buffer to read buffer
-    tokio::task::spawn(async move { run_chunk_movers(Arc::clone(&app_server)).await }); 
+    tokio::task::spawn(async move { ChunkMover::run_chunk_movers(Arc::clone(&app_server)).await });
     info!("Chunk Movers ready");
 
     // Wait for both the servers to complete
@@ -157,72 +157,6 @@ pub async fn main(logging_level: LoggingLevel, config: RunConfig) -> Result<()> 
     info!("InfluxDB IOx server shutting down");
 
     Ok(())
-}
-
-/// ChunkMover: a background service (or a background task) that is responsible
-/// for moving eligible chunks from mutable buffer to read buffer. This is a
-/// repeating process that ensures all chunks are moved successfully
-/// or move them again if they fail or are stuck for too long for some reasons.
-/// Chunks that are already moved also need to get dropped.
-/// The whole process is done through 3 independent sub-services, each will be
-/// independently correct. To do so, we need to keep track of a state for each
-/// chunk of the mutable buffer.
-///
-/// # State's values:
-///   * `open`: this chunk is still accepting ingesting data and should not be
-///     moved.
-///   * `closing`: this chunk is in a closing process which might accept more
-///     writes or be merged with other chunks or be split into many chunks.
-///   * `closed`: this chunk is closed and becomes immutable which means it is
-///     eligible to move to read buffer.
-///   * `moving`: this chunk is in the moving-process to read buffer. All tables
-///     of the chunk will be moved in parallel in different tasks.
-///
-/// # Sub-services
-/// For each DB, four major sub-services will be spawned, each repeat their
-/// below duty cycle after some sleep.
-///   * `move_chunks`: to move "closed" chunks (eligible chunks) of mutable
-///     buffer to read buffer. Before the process starts, the "closed" chunk
-///     will be advanced to "moving".
-///   * `move_moving_chunks`: to move chunks that have been moved & marked
-///     "moving" but either failed or still running after a while.
-///   * `drop_successful_moving_chunks`: to drop chunks whose tables have been
-///     moved into read buffer.
-async fn run_chunk_movers(server: Arc<AppServer<ConnectionManager>>) {
-    // TODO
-    // (1). DBs must be read inside each service below to make sure new DB and
-    // dropped DBs are included (2).Instead of calling server.db_names_sorted()
-    // there should probably be a server.dbs() method added to the DatabaseStore
-    // trait. I imagine it would look something like:      async fn dbs(&self)
-    // -> Vec<Arc<Self::Database>>;
-
-    let database_names = server.db_names_sorted();
-    for name in database_names {
-        let db = match server.db_or_create(&name).await {
-            Ok(db) => db,
-            Err(e) => {
-                // TODO - some errors should probably be ignored, e.g., if
-                // the database doesn't exist due to a race between this and
-                // above?
-                warn!(error= ?e, error_message = ?e.to_string(), db_name = ?name, "Database not found");
-                continue;
-            }
-        };
-
-        // Move "closed" chunks
-        let service_db = Arc::clone(&db);
-        tokio::task::spawn(async move { service_db.move_chunks().await });
-
-        // Move "moving" chunks
-        // TODO: need to discuss this further with Edd and see if we can use
-        // anything from Raphael's task trackers & cancel a long-running task
-        // let service_db = Arc::clone(&db);
-        // tokio::task::spawn(async move { service_db.move_moving_chunks().await } );
-
-        // Advance "moving" chunks to "moved"
-        let service_db = Arc::clone(&db);
-        tokio::task::spawn(async move { service_db.drop_successful_moving_chunks().await });
-    }
 }
 
 impl TryFrom<&RunConfig> for ObjectStore {

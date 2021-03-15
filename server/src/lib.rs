@@ -68,6 +68,7 @@
 )]
 
 pub mod buffer;
+pub mod chunk_mover;
 mod config;
 pub mod db;
 pub mod snapshot;

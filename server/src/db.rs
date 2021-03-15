@@ -21,7 +21,7 @@ use snafu::{OptionExt, ResultExt, Snafu};
 
 use crate::buffer::Buffer;
 
-use tracing::{debug, info};
+use tracing::info;
 
 mod chunk;
 pub(crate) use chunk::DBChunk;
@@ -58,9 +58,6 @@ pub enum Error {
         chunk_id: u32,
         table_name: String,
     },
-
-    #[snafu(display("Joining execution task: {}", source))]
-    JoinError { source: tokio::task::JoinError },
 
     #[snafu(display("Unknown Mutable Buffer Chunk {}", chunk_id))]
     UnknownMutableBufferChunk { chunk_id: u32 },
@@ -141,145 +138,6 @@ impl Db {
             read_buffer,
             wal_buffer,
             sequence: AtomicU64::new(STARTING_SEQUENCE),
-        }
-    }
-
-    /// Move "closed" chunks (eligible chunks) of mutable buffer to read buffer.
-    /// Before the process starts, the "closed" chunk will be advanced to
-    /// "moving".
-    pub async fn move_chunks(&self) -> Result<()> {
-        self.capture_start_service("move_chunks");
-        let mut interval = tokio::time::interval(self.rules.chunk_mover_duration);
-        interval.tick().await;
-
-        // TODO: need to decide whether to handle error inside the loop and continue or
-        // exit the loop loop {
-        //     ...
-        //     fn body()  -> Result<()> {
-        //       ///
-        //     }
-        //     if let Err(e) = body() {
-        //        ....
-        //   }
-
-        //   https://play.rust-lang.org/?version=stable&mode=debug&edition=2018&gist=1e93a917933d96dfa06983fb135e9df0
-
-        loop {
-            // Sleep and wait
-            interval.tick().await;
-
-            self.capture_start_service_cycle("move_chunks");
-            let now = std::time::Instant::now();
-
-            // Collect closed chunks
-            let partition_chunks = self.collect_chunks(ChunkState::Closed);
-
-            // Advance the chunks' state from "closed" to "moving"
-            for (partition_key, chunk_id) in &partition_chunks {
-                self.advance_chunk_state(partition_key.as_str(), *chunk_id, ChunkState::Moving)?;
-            }
-
-            // Get Data for tables of each chunk
-            let batches = self.table_data_of_chunks(&partition_chunks)?;
-
-            // Now spawn tasks for the each table data batch
-            for (partition_key, chunk_id, table_name, data) in batches {
-                let read_buff = Arc::clone(&self.read_buffer);
-                tokio::task::spawn(async move {
-                    read_buff.upsert_partition(
-                        partition_key.as_str(),
-                        chunk_id,
-                        table_name.as_str(),
-                        data,
-                    )
-                })
-                .await // TODO: collect handle and wait afterward
-                .context(JoinError)?;
-            }
-
-            self.capture_end_service_cycle("move_chunks", now.elapsed());
-        }
-    }
-
-    pub fn capture_start_service(&self, service: &str) {
-        debug!(
-            "Background {} for Database {} starts",
-            service, self.rules.name
-        );
-    }
-    pub fn capture_start_service_cycle(&self, service: &str) {
-        debug!(
-            "Background {} for Database {} starts a new cycle",
-            service, self.rules.name
-        );
-    }
-    pub fn capture_end_service_cycle(&self, service: &str, elapse: std::time::Duration) {
-        debug!(
-            "Background {} for Database {} finished checking a cycle in {:?}",
-            service, self.rules.name, elapse
-        );
-    }
-
-    /// Move chunks that have been moved & marked "moving" but either failed or
-    /// still running after a while.
-    pub async fn move_moving_chunks(&self) {
-        self.capture_start_service("move_moving_chunks");
-        let mut interval = tokio::time::interval(self.rules.chunk_mover_duration);
-        interval.tick().await;
-        loop {
-            // Sleep and wait
-            // TODO: let see if we need different sleep time to move "moving" chunks
-            interval.tick().await;
-            self.capture_start_service_cycle("move_moving_chunks");
-            let now = std::time::Instant::now();
-
-            // Move the tables of "moving" chunks that have ot been successfully moved by
-            // previous cycle Collect moving chunks
-            let _partition_chunks = self.collect_chunks(ChunkState::Moving);
-            // TODO
-            // Get Data for tables of each chunk that have not been in read buffer yet
-            // (which means they have not been successfully moved in last cycle)
-            // let batches =
-            // self.get_remaining_table_data_of_chunks(partition_chunks).unwrap(); // TODO
-            // // Now spawn tasks for each table data batch
-            // for (partition_key, chunk_id, table_name, data) in batches {  // TODO
-            //     // tokio::task::spawn(|...|
-            //     //     self.read_buffer
-            //     //        .upsert_partition(partition_key, chunk_id, table_name, data);
-            //     //     chunk_num_tables(p_key, c_id)--
-            // }
-
-            self.capture_end_service_cycle("move_moving_chunks", now.elapsed());
-        }
-    }
-
-    /// Advance "moving" chunks whose all tables are in read buffer to "moved"
-    pub async fn drop_successful_moving_chunks(&self) -> Result<()> {
-        self.capture_start_service("drop_successful_moving_chunks");
-        let mut interval = tokio::time::interval(self.rules.chunk_mover_duration);
-        interval.tick().await;
-        loop {
-            // Sleep and wait
-            interval.tick().await;
-            self.capture_start_service_cycle("drop_successful_moving_chunks");
-            let now = std::time::Instant::now();
-
-            // Collect all "moving" chunks
-            let partition_chunks = self.collect_chunks(ChunkState::Moving);
-
-            // Go over each chunk to see if it is ready to advance to "moved"
-            for (partition_key, chunk_id) in partition_chunks {
-                // Get all tables of this chunk
-                let tables = self.chunk_tables(partition_key.as_str(), chunk_id)?;
-
-                // Check if all tables of the chunk are in read buffer
-                if self.all_tables_in_read_buffer(partition_key.as_str(), chunk_id, &tables) {
-                    self.drop_mutable_buffer_chunk(partition_key.as_str(), chunk_id)
-                        .await?;
-                }
-            }
-
-            self.capture_end_service_cycle("drop_successful_moving_chunks", now.elapsed());
         }
     }
 
