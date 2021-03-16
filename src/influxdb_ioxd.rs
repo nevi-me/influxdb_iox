@@ -141,11 +141,11 @@ pub async fn main(logging_level: LoggingLevel, config: Config) -> Result<()> {
     let git_hash = option_env!("GIT_HASH").unwrap_or("UNKNOWN");
     info!(git_hash, "InfluxDB IOx server ready");
 
-    // Get IOx background worker task
-    let app = app_server.background_worker();
+    // start the background task
+    AppServer::start_background_task(&app_server);
 
     // TODO: Fix shutdown handling (#827)
-    let (grpc_server, server, _) = futures::future::join3(grpc_server, http_server, app).await;
+    let (grpc_server, server) = futures::future::join(grpc_server, http_server).await;
 
     grpc_server.context(ServingRPC)?;
     server.context(ServingHttp)?;

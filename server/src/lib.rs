@@ -76,7 +76,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::TryStreamExt;
 use snafu::{OptionExt, ResultExt, Snafu};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use data_types::{
     data::{lines_to_replicated_write, ReplicatedWrite},
@@ -409,24 +409,40 @@ impl<M: ConnectionManager> Server<M> {
     pub fn get_job(&self, id: TrackerId) -> Option<Tracker<Job>> {
         self.jobs.get(id)
     }
+}
 
-    /// Background worker function
+impl<M: ConnectionManager + Send + Sync + 'static> Server<M> {
+    /// Begins a background worker function for this server.
     ///
-    /// TOOD: Handle termination (#827)
-    pub async fn background_worker(&self) {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+    /// When the server is dropped, the background worker will exit
+    /// when it next wakes up to check for work
+    pub fn start_background_task(arc_self: &Arc<Self>) {
+        let weak_self = Arc::downgrade(arc_self);
 
-        loop {
-            // TODO: Retain limited history of past jobs, e.g. enqueue returned data into a
-            // Dequeue
-            let reclaimed = self.jobs.reclaim();
+        tokio::task::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
 
-            for job in reclaimed {
-                info!(?job, "job finished");
+            loop {
+                let strong_self = match weak_self.upgrade() {
+                    None => {
+                        debug!("Server has been dropped, exiting background worker");
+                        return;
+                    }
+                    Some(strong_self) => strong_self,
+                };
+
+                // TODO: Retain limited history of past jobs, e.g. enqueue returned data into a
+                // Dequeue
+                debug!("Checking for jobs to reclaim");
+                let reclaimed = strong_self.jobs.reclaim();
+
+                for job in reclaimed {
+                    info!(?job, "job finished");
+                }
+
+                interval.tick().await;
             }
-
-            interval.tick().await;
-        }
+        });
     }
 }
 
@@ -813,6 +829,23 @@ partition_key:
     host:a used:10.1 time:12
 "#;
         assert_eq!(segment.writes[0].to_string(), write);
+    }
+
+    #[tokio::test]
+    async fn background_task_cleans_jobs() -> Result {
+        let manager = TestConnectionManager::new();
+        let store = Arc::new(ObjectStore::new_in_memory(InMemory::new()));
+        let server = Arc::new(Server::new(manager, store));
+        Server::start_background_task(&server);
+
+        let wait_nanos = 1000;
+        let job = server.spawn_dummy_job(vec![wait_nanos]);
+
+        // Note: this will hang forwever if the background task has not been started
+        job.join().await;
+
+        assert!(job.is_complete());
+        Ok(())
     }
 
     #[derive(Snafu, Debug, Clone)]
