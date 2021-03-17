@@ -90,7 +90,7 @@ jobs:
   perf_image:
     docker:
       - image: quay.io/influxdb/rust:ci
-    resource_class: xlarge # use of a smaller executor tends crashes on link
+    resource_class: 2xlarge # use of a smaller executor tends crashes on link
     steps:
       - checkout
       - rust_nightly
